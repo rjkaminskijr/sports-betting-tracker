@@ -1,0 +1,7 @@
+streamlit>=1.36
+pytesseract>=0.3.10
+Pillow>=10.0
+opencv-python-headless>=4.9
+pandas>=2.0
+supabase>=2.6
+requests>=2.31
