@@ -1,4 +1,5 @@
 import io
+import hmac
 from datetime import datetime
 from PIL import Image
 import pandas as pd
@@ -16,10 +17,54 @@ from importers.fanatics.parser import parse_fanatics_share_url
 from services.screenshot_storage import save_screenshot
 
 st.set_page_config(page_title='Sports Bet Tracker', page_icon='🎟️', layout='wide')
+
+
+def require_login():
+    """Require credentials stored in Streamlit Secrets before rendering the tracker."""
+    try:
+        auth = st.secrets["auth"]
+        expected_username = str(auth["username"])
+        expected_password = str(auth["password"])
+    except Exception:
+        st.error(
+            "Login is not configured. Add [auth] username and password values "
+            "to Streamlit Secrets before using this deployment."
+        )
+        st.stop()
+
+    if st.session_state.get("authenticated") is True:
+        with st.sidebar:
+            st.caption(f"Signed in as **{expected_username}**")
+            if st.button("Log out", use_container_width=True):
+                st.session_state["authenticated"] = False
+                st.rerun()
+        return
+
+    st.title("🎟️ Sports Bet Tracker")
+    st.caption("Private access")
+
+    with st.form("login_form", clear_on_submit=False):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Log in", type="primary", use_container_width=True)
+
+    if submitted:
+        username_ok = hmac.compare_digest(username, expected_username)
+        password_ok = hmac.compare_digest(password, expected_password)
+        if username_ok and password_ok:
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect username or password.")
+
+    st.stop()
+
+
+require_login()
 init_db()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 8.1 Cloud • DraftKings + FanDuel + Fanatics screenshot import • Supabase persistence • ESPN NFL live tracking')
+st.caption('Version 8.2 Cloud • Private login • DraftKings + FanDuel + Fanatics screenshot import • Supabase persistence • ESPN NFL live tracking')
 st.caption(f'Data storage: **{storage_backend_name()}**')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
