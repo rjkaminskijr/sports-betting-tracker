@@ -142,7 +142,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 20.0 • Login restored + expandable Supabase-backed tracking')
+st.caption('Version 21.0 • Active Legs tab + login + expandable Supabase tracking')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -1440,7 +1440,182 @@ def _render_dashboard(all_bets):
             f"{rr['won']}/{rr['lost']}/{rr['pending']}",
         )
 
-tab_dash, tab_active, tab_futures, tab_history = st.tabs(['Dashboard','Active Bets','Season Futures','History'])
+
+def _active_leg_rows_excluding_futures():
+    """
+    Return active game-bet legs only.
+
+    Excludes any leg explicitly tracked as a season future and also
+    excludes every leg belonging to a bet that has at least one
+    tracking_scope=SEASON leg, so bets shown on the Season Futures tab
+    never appear on Active Legs.
+    """
+    all_bets = list_bets()
+
+    future_bet_ids = set()
+
+    try:
+        for future_leg in list_future_legs():
+            if future_leg.get('bet_row_id') is not None:
+                future_bet_ids.add(
+                    int(future_leg['bet_row_id'])
+                )
+    except Exception:
+        future_bet_ids = set()
+
+    rows = []
+
+    for bet in all_bets:
+        if not _is_active_status(
+            bet.get('status')
+        ):
+            continue
+
+        bet_id = int(
+            bet['id']
+        )
+
+        if bet_id in future_bet_ids:
+            continue
+
+        legs = list_legs(
+            bet_id
+        )
+
+        for leg in legs:
+            if (
+                str(
+                    leg.get('tracking_scope')
+                    or ''
+                )
+                .strip()
+                .upper()
+                == 'SEASON'
+            ):
+                continue
+
+            leg_status = str(
+                leg.get('status')
+                or 'PENDING'
+            ).strip().upper()
+
+            if leg_status in SETTLED_STATUSES:
+                continue
+
+            game = _game_description(
+                leg
+            )
+
+            rows.append({
+                'Bet ID': bet_id,
+                'Sportsbook': bet.get('sportsbook') or '',
+                'Bet': _bet_description(bet, legs),
+                'Sport': _display_sport(bet, legs),
+                'Leg #': leg.get('leg_index'),
+                'Selection': leg.get('selection') or '',
+                'Market': leg.get('market') or '',
+                'Line': leg.get('line_value'),
+                'Direction': leg.get('direction') or '',
+                'Game': game or '',
+                'Status': leg_status,
+                'Live': leg.get('live_value') or '',
+                'Event ID': leg.get('espn_event_id') or '',
+            })
+
+    return rows
+
+
+def _render_active_legs_tab():
+    st.subheader('Active Legs')
+    st.caption(
+        'Individual active game-bet legs. Bets tracked on the '
+        'Season Futures tab are excluded completely.'
+    )
+
+    rows = _active_leg_rows_excluding_futures()
+
+    if not rows:
+        st.info('No active non-futures legs.')
+        return
+
+    df = pd.DataFrame(rows)
+
+    # Keep the most useful columns visible first.
+    visible = [
+        'Bet ID',
+        'Sportsbook',
+        'Sport',
+        'Selection',
+        'Market',
+        'Line',
+        'Direction',
+        'Game',
+        'Status',
+        'Live',
+        'Bet',
+    ]
+
+    st.dataframe(
+        df[visible],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            'Bet ID': st.column_config.NumberColumn(
+                'Bet',
+                format='%d',
+                width='small',
+            ),
+            'Sportsbook': st.column_config.TextColumn(
+                'Sportsbook',
+                width='small',
+            ),
+            'Sport': st.column_config.TextColumn(
+                'Sport',
+                width='small',
+            ),
+            'Selection': st.column_config.TextColumn(
+                'Selection',
+                width='medium',
+            ),
+            'Market': st.column_config.TextColumn(
+                'Market',
+                width='medium',
+            ),
+            'Line': st.column_config.NumberColumn(
+                'Line',
+                format='%.1f',
+                width='small',
+            ),
+            'Direction': st.column_config.TextColumn(
+                'Dir',
+                width='small',
+            ),
+            'Game': st.column_config.TextColumn(
+                'Game',
+                width='large',
+            ),
+            'Status': st.column_config.TextColumn(
+                'Status',
+                width='small',
+            ),
+            'Live': st.column_config.TextColumn(
+                'Live',
+                width='medium',
+            ),
+            'Bet': st.column_config.TextColumn(
+                'Bet Description',
+                width='large',
+            ),
+        },
+    )
+
+    st.caption(
+        f"{len(rows)} active leg(s) across "
+        f"{df['Bet ID'].nunique()} bet(s)."
+    )
+
+
+tab_dash, tab_active, tab_legs, tab_futures, tab_history = st.tabs(['Dashboard','Active Bets','Active Legs','Season Futures','History'])
 
 with tab_dash:
     _render_dashboard(list_bets())
@@ -1521,6 +1696,10 @@ with tab_active:
             'active',
             show_schedule_override=True,
         )
+
+
+with tab_legs:
+    _render_active_legs_tab()
 
 
 with tab_futures:
