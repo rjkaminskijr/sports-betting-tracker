@@ -21,7 +21,7 @@ st.set_page_config(page_title='Sports Bet Tracker', page_icon='🎟️', layout=
 init_db()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 10.0 • Supabase-backed bet tracking + expandable bet tables')
+st.caption('Version 12.0 • Supabase-backed bet tracking + reviewed bet details')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -43,9 +43,9 @@ def _display_sport(bet, legs):
     if sport:
         upper = sport.upper()
         aliases = {
-            'NCAAF': 'College Football',
-            'CFB': 'College Football',
-            'COLLEGE FOOTBALL': 'College Football',
+            'NCAAF': 'CFB',
+            'CFB': 'CFB',
+            'COLLEGE FOOTBALL': 'CFB',
         }
         return aliases.get(upper, upper)
 
@@ -87,6 +87,27 @@ def _bet_description(bet, legs):
     rr_size = bet.get('round_robin_size')
     rr_combos = bet.get('round_robin_combinations')
     bet_type = str(bet.get('bet_type') or '').strip().upper()
+
+    if 'TEASER' in bet_type:
+        # DraftKings teaser receipts may store the teaser point value in
+        # headline/subtitle. Prefer that when available.
+        teaser_text = 'Teaser'
+        source_text = ' '.join(
+            str(x or '')
+            for x in [
+                bet.get('headline'),
+                bet.get('subtitle'),
+            ]
+        )
+        import re as _re
+        match = _re.search(r'(\d+(?:\.\d+)?)\s*[- ]?Point\s+Teaser', source_text, _re.I)
+        if match:
+            teaser_text = f"{match.group(1)}-Point Teaser"
+
+        return f"{sport} {teaser_text}"
+
+    if 'SGPX' in bet_type:
+        return f"{sport} SGPx {len(legs)}-Pick Parlay"
 
     if rr_size or rr_combos or 'ROUND ROBIN' in bet_type:
         if len(unique_markets) == 1:
@@ -186,20 +207,50 @@ def _build_bet_table_rows(bets):
     return table_rows, leg_map
 
 
-def _render_leg_table(legs):
+def _leg_game_detail(leg):
+    team_a = str(leg.get('event_team_a') or '').strip()
+    team_b = str(leg.get('event_team_b') or '').strip()
+
+    if team_a and team_b:
+        return f"{team_a} @ {team_b}"
+
+    if team_a:
+        return team_a
+
+    if team_b:
+        return team_b
+
+    event_name = str(leg.get('event_name') or '').strip()
+    if event_name:
+        return event_name
+
+    return ''
+
+
+def _render_leg_table(legs, bet=None):
     display = []
 
+    show_leg_odds = not (
+        len(legs) == 1 or
+        str((bet or {}).get('bet_type') or '').upper() == 'STRAIGHT'
+    )
+
     for leg in legs:
-        display.append({
+        row = {
             '#': leg.get('leg_index'),
             'Selection': leg.get('selection'),
+            'Game': _leg_game_detail(leg),
             'Market': leg.get('market'),
             'Line': leg.get('line_value'),
-            'Odds': leg.get('odds'),
             'Live': leg.get('live_value'),
             'Game State': leg.get('live_state') or leg.get('future_state'),
             'Status': leg.get('status') or 'PENDING',
-        })
+        }
+
+        if show_leg_odds:
+            row['Odds'] = leg.get('odds')
+
+        display.append(row)
 
     if display:
         st.dataframe(
@@ -256,7 +307,7 @@ def _render_bet_metadata(bet, legs):
         st.markdown(f"[Open Fanatics shared slip]({bet.get('fanatics_share_url')})")
 
     st.markdown('#### Legs')
-    _render_leg_table(legs)
+    _render_leg_table(legs, bet)
 
 
 def _render_selectable_bet_table(bets, key):
