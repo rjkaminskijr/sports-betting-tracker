@@ -1,24 +1,27 @@
-import io
 from datetime import datetime
-from PIL import Image
+
 import pandas as pd
 import streamlit as st
-from ocr.extractor import extract_text
-from importers.draftkings.parser import parse_draftkings
-from services.duplicate_detector import sha256_bytes
-from database.db import init_db, save_bet, replace_bet, is_duplicate, list_bets, list_legs, update_leg_live, update_bet_espn_scope, update_leg_future_settings, update_leg_future_live, update_leg_line_direction, update_leg_manual_status, future_legs
-from services.espn_nfl import find_event, event_snapshot, game_summary, snapshot_display, team_for_player
-from services.progress import evaluate_leg, parlay_state, progress_text
-from services.gmail_import import scan_label
+
+from database.db import (
+    init_db,
+    list_bets,
+    list_legs,
+    update_bet_espn_scope,
+    update_leg_future_settings,
+    update_leg_future_live,
+    update_leg_line_direction,
+    update_leg_manual_status,
+    future_legs,
+)
 from services.espn_season import canonical_market, future_progress
-from importers.fanatics.parser import parse_fanatics_share_url
 from services.supabase_api import refresh_all_active_bets, recheck_leg
 
 st.set_page_config(page_title='Sports Bet Tracker', page_icon='🎟️', layout='wide')
 init_db()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 8.0 • Supabase-backed bet tracking + on-demand live refresh')
+st.caption('Version 9.0 • Supabase-backed bet tracking + on-demand live refresh')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -27,54 +30,7 @@ ACTIVE_STATUSES={'PENDING','OPEN','LIVE','IN_PROGRESS'}
 SETTLED_STATUSES={'WON','LOST','PUSH','VOID','VOIDED','CANCELLED','CANCELED','CASHED_OUT'}
 def _is_active_status(v): return str(v or '').upper() in ACTIVE_STATUSES
 
-def refresh_bet_live(bet):
-    results=[]
-    summary_cache={}
-    season_year=bet.get('espn_season_year')
-    season_type=bet.get('espn_season_type')
-    week=bet.get('espn_week')
-    for leg in list_legs(bet['id']):
-        if (bet.get('sport') or '').upper()!='NFL':
-            results.append((leg,{'state':'NFL ONLY'})); continue
-        team_a=leg.get('event_team_a'); team_b=leg.get('event_team_b')
-        # If parser did not capture matchup, the selection itself is enough when date is known.
-        event=find_event(team_a, team_b, leg.get('event_time'), selection=leg.get('selection'), season_year=season_year, season_type=season_type, week=week)
-        # Player-only props (especially mobile Anytime TD slips) often contain no
-        # printed matchup. Resolve the player's current ESPN roster team, then
-        # find that team's scheduled/live game.
-        if not event and leg.get('selection'):
-            team=team_for_player(leg.get('selection'))
-            if team:
-                event=find_event(selection=team, start_time=leg.get('event_time'), season_year=season_year, season_type=season_type, week=week)
-        if not event:
-            results.append((leg,{'state':'NO ESPN MATCH'})); continue
-        snap=event_snapshot(event)
-        summary=None
-        # Team-yardage and player-prop markets require ESPN box-score data.
-        # Cache by event so multi-leg SGPs do not download the same game summary
-        # repeatedly during one refresh.
-        market=(leg.get('market') or '').upper()
-        needs_summary = (
-            'TEAM TOTAL YARDS' in market or
-            'TEAM TOTAL RUSHING YARDS' in market or
-            'TEAM TOTAL RECEIVING YARDS' in market or
-            ('MONEYLINE' not in market and 'SPREAD' not in market and 'TOTAL' not in market)
-        )
-        if needs_summary:
-            event_id=str(event.get('id'))
-            if event_id not in summary_cache:
-                try: summary_cache[event_id]=game_summary(event_id)
-                except Exception: summary_cache[event_id]=None
-            summary=summary_cache.get(event_id)
-        prog=evaluate_leg(leg,snap,summary)
-        display=progress_text(prog)
-        if not display: display=snapshot_display(snap)
-        update_leg_live(leg['id'],event.get('id'),prog.get('state'),display,datetime.now().isoformat(timespec='seconds'))
-        leg.update({'espn_event_id':event.get('id'),'live_state':prog.get('state'),'live_value':display})
-        results.append((leg,prog))
-    return results
-
-tab_dash, tab_email, tab_import, tab_fanatics, tab_active, tab_futures, tab_history = st.tabs(['Dashboard','Email Import','Import Bets','Fanatics Import','Active Bets','Season Futures','History'])
+tab_dash, tab_active, tab_futures, tab_history = st.tabs(['Dashboard','Active Bets','Season Futures','History'])
 
 with tab_dash:
     all_bets=list_bets(); open_bets=[b for b in all_bets if _is_active_status(b.get('status'))]
@@ -83,133 +39,9 @@ with tab_dash:
     total_stake=sum(float(b.get('stake') or 0) for b in all_bets); c3.metric('Total Wagered',_money(total_stake))
     pnl=sum((float(b.get('paid') or 0)-float(b.get('stake') or 0)) if b.get('status')=='WON' else (-float(b.get('stake') or 0) if b.get('status')=='LOST' else 0) for b in all_bets)
     c4.metric('Settled P/L',_money(pnl))
-    st.info('Live tracking is enabled for NFL bets first. Other sports remain stored normally and will be added later.')
+    st.info('Bets are imported through the iPhone/iPad Shortcut into Supabase. This app is now the tracking, refresh, futures, and history interface.')
 
 
-with tab_email:
-    st.subheader('Import from Gmail')
-    st.caption('Reads the Gmail label “Sports Bet Tracker” using Gmail IMAP. The app only reads that label and does not modify or delete email.')
-    st.info('Gmail requires a Google App Password for this local importer. Your normal Gmail password will not work. The password is used only for this scan and is not written to bet_tracker.db.')
-    ec1,ec2=st.columns([1.2,1])
-    gmail_address=ec1.text_input('Gmail address', placeholder='you@gmail.com')
-    gmail_app_password=ec2.text_input('Google App Password', type='password', help='16-character App Password generated by Google Account security.')
-    limit=st.number_input('Messages to scan', min_value=1, max_value=500, value=100, step=25)
-    if st.button('Scan Sports Bet Tracker label', type='primary'):
-        if not gmail_address or not gmail_app_password:
-            st.error('Enter your Gmail address and Google App Password first.')
-        else:
-            try:
-                messages=scan_label(gmail_address, gmail_app_password, 'Sports Bet Tracker', int(limit))
-                st.session_state['gmail_scan']=messages
-                st.success(f'Found {len(messages)} labeled email(s) with a DraftKings link and/or image attachment.')
-            except Exception as e:
-                st.error(f'Gmail scan failed: {e}')
-    messages=st.session_state.get('gmail_scan', [])
-    if messages:
-        new_count=0; imported_count=0
-        for mi,msg in enumerate(messages):
-            imgs=msg.get('images') or []
-            link=(msg.get('draftkings_links') or [None])[0]
-            with st.expander(f"{msg.get('subject') or 'DraftKings bet'} — {msg.get('date') or ''}", expanded=(mi==0)):
-                if link:
-                    st.write(f'**DraftKings share link:** {link}')
-                if not imgs:
-                    st.warning('No image attachment found in this email. The share link was saved for reference, but there is no screenshot to OCR.')
-                    continue
-                for ii,item in enumerate(imgs):
-                    raw=item['bytes']; img=item['image']; h=sha256_bytes(raw)
-                    
-                    try:
-                        text = extract_text(img, sparse=True)
-                    except TypeError:
-                        # Backward compatibility with older extractor.py copies.
-                        text = extract_text(img)
-                    parsed=parse_draftkings(text)
-                    parsed['screenshot_hash']=h
-                    parsed['source_filename']=item.get('filename') or 'email-bet.jpg'
-                    parsed['draftkings_share_url']=link
-                    parsed['source_email_id']=msg.get('message_id') or msg.get('imap_id')
-                    parsed['source_email_subject']=msg.get('subject')
-                    dup=is_duplicate(h,parsed.get('sportsbook_bet_id'))
-                    c1,c2=st.columns([1,1.25])
-                    with c1: st.image(img,use_container_width=True)
-                    with c2:
-                        st.write(f"**{parsed.get('headline') or 'Detected bet'}**")
-                        st.write(f"Status: `{parsed.get('status')}`  •  Wager: `{_money(parsed.get('money',{}).get('stake'))}`  •  Odds: `{_odds(parsed.get('odds',{}).get('current'))}`")
-                        st.write(f"Detected legs: **{len(parsed.get('legs') or [])}**")
-                        if parsed.get('legs'):
-                            st.dataframe(pd.DataFrame([{'#':x.get('index'),'Selection':x.get('selection'),'Market':x.get('market'),'Line':x.get('line'),'Odds':x.get('odds')} for x in parsed['legs']]),use_container_width=True,hide_index=True)
-                        if dup:
-                            st.caption('Already imported — skipped by duplicate detection.')
-                        else:
-                            new_count += 1
-                            if st.button('Import this bet',key=f'emailimport_{mi}_{ii}'):
-                                save_bet(parsed); imported_count += 1; st.success('Imported from Gmail.')
-        st.caption('Tip: once the parser is reliable on your bet formats, we can change this page to one-click “Import All New Bets.”')
-
-with tab_import:
-    files=st.file_uploader('Upload DraftKings screenshots',type=['png','jpg','jpeg'],accept_multiple_files=True)
-    if files:
-        for idx,f in enumerate(files):
-            raw=f.getvalue(); h=sha256_bytes(raw); img=Image.open(io.BytesIO(raw))
-            with st.expander(f'{idx+1}. {f.name}',expanded=(idx==0)):
-                c1,c2=st.columns([1,1.15])
-                with c1: st.image(img,use_container_width=True)
-                text=extract_text(img); parsed=parse_draftkings(text); parsed['screenshot_hash']=h; parsed['source_filename']=f.name
-                dup=is_duplicate(h,parsed.get('sportsbook_bet_id'))
-                with c2:
-                    if dup: st.warning('Possible duplicate: screenshot hash or DraftKings bet ID already saved.')
-                    statuses=['OPEN','WON','LOST','PUSH','VOID','CASHED_OUT','UNKNOWN']; types=['SINGLE','PARLAY','SGP']
-                    status=st.selectbox('Status',statuses,index=statuses.index(parsed['status']) if parsed['status'] in statuses else -1,key=f's{idx}')
-                    bt=st.selectbox('Bet type',types,index=types.index(parsed['bet_type']) if parsed['bet_type'] in types else 0,key=f'b{idx}')
-                    a,b,c=st.columns(3)
-                    stake=a.number_input('Wager',min_value=0.0,value=float(parsed['money']['stake'] or 0),step=1.0,key=f'w{idx}')
-                    odds=b.number_input('Odds',value=int(parsed['odds']['current'] or 0),step=1,key=f'o{idx}')
-                    payout=c.number_input('To Pay / Paid',min_value=0.0,value=float(parsed['money']['to_pay'] or parsed['money']['paid'] or 0),step=1.0,key=f'p{idx}')
-                    betid=st.text_input('DraftKings bet ID',parsed.get('sportsbook_bet_id') or '',key=f'i{idx}')
-                    headline=st.text_input('Headline',parsed.get('headline') or '',key=f'h{idx}'); subtitle=st.text_input('Subtitle / market',parsed.get('subtitle') or '',key=f'u{idx}')
-                    parsed.update({'status':status,'bet_type':bt,'sportsbook_bet_id':betid or None,'headline':headline or None,'subtitle':subtitle or None}); parsed['odds']['current']=odds; parsed['money']['stake']=stake
-                    if status=='OPEN': parsed['money']['to_pay']=payout; parsed['money']['paid']=None
-                    elif status=='WON': parsed['money']['paid']=payout; parsed['money']['to_pay']=None
-                    st.write('**Detected legs**')
-                    if parsed['legs']:
-                        st.dataframe(pd.DataFrame([{'#':x.get('index'),'Selection':x.get('selection'),'Market':x.get('market'),'Line':x.get('line'),'Odds':x.get('odds'),'Event':(x.get('event') or {}).get('start_time')} for x in parsed['legs']]),use_container_width=True,hide_index=True)
-                    else: st.info('No legs detected. Save only after reviewing the OCR output.')
-                    if dup:
-                        st.caption('This screenshot/bet already exists. Use Replace Existing after parser upgrades to rebuild its legs.')
-                        if st.button('Replace Existing Bet',key=f'replace{idx}',type='primary'):
-                            replace_bet(parsed); st.success('Existing bet replaced with the newly parsed version.')
-                    else:
-                        if st.button('Save Bet',key=f'save{idx}'):
-                            save_bet(parsed); st.success('Saved to bet_tracker.db')
-                with st.expander('OCR / normalized JSON'): st.text(text); st.json(parsed)
-
-
-with tab_fanatics:
-    st.subheader('Fanatics Share Link Import')
-    st.caption('Paste the expanded Fanatics share URL from your browser/iPhone. The app decodes the bet ID and every event/market/selection ID locally.')
-    f_url=st.text_area('Fanatics share URL', height=110, placeholder='https://betfanatics.com/sportsbook?...deep_link_sub1=...')
-    if st.button('Decode Fanatics bet', type='primary'):
-        try:
-            fbet=parse_fanatics_share_url(f_url)
-            st.session_state['fanatics_decoded']=fbet
-        except Exception as e:
-            st.error(str(e))
-    fbet=st.session_state.get('fanatics_decoded')
-    if fbet:
-        if fbet.get('needs_expanded_link'):
-            st.warning('This is the short fanatics.onelink.me URL. Open it in a browser and paste the final betfanatics.com URL so the embedded bet payload is available.')
-        else:
-            st.success(f"Decoded Fanatics bet ID {fbet.get('sportsbook_bet_id')} with {fbet.get('leg_count')} leg(s).")
-            rows=[]
-            for x in fbet.get('legs') or []:
-                rows.append({'#':x.get('index'),'Event ID':x.get('fanatics_event_id'),'Market ID':x.get('fanatics_market_id'),'Selection ID':x.get('fanatics_selection_id')})
-            if rows: st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-            st.info('The shared URL gives us stable Fanatics IDs, but not the human-readable team/market/odds yet. The next resolver step will map these IDs to bet text without OCR.')
-            if is_duplicate(None,fbet.get('sportsbook_bet_id')):
-                st.caption('Already imported — duplicate bet ID detected.')
-            elif st.button('Import Fanatics skeleton bet'):
-                save_bet(fbet); st.success('Fanatics bet IDs saved.'); st.rerun()
 
 with tab_active:
     st.subheader('Active Bets')
@@ -237,15 +69,15 @@ with tab_active:
             f"across {last_refresh.get('batches',0)} batch(es). "
             f"Skipped {last_refresh.get('skipped',0)} • Failed {last_refresh.get('failed',0)}"
         )
-        
+
         if last_refresh.get('failed', 0):
             with st.expander('Show refresh errors'):
                 failed_rows = [
                     r for r in (last_refresh.get('results') or [])
                     if not r.get('ok', False)
                 ]
-            st.json(failed_rows[:10])
-            
+                st.json(failed_rows[:10])
+
         if last_refresh_at:
             st.caption(f'Last app refresh: {last_refresh_at}')
 
