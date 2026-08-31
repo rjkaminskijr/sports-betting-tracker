@@ -156,7 +156,7 @@ def invoke_match_players(body=None, timeout=180):
     )
 
 
-def _run_match_events_all(batch_size=25, max_batches=100):
+def _run_match_events_all(batch_size=8, max_batches=100):
     after_leg_id = 0
     batches = []
     totals = {
@@ -171,7 +171,7 @@ def _run_match_events_all(batch_size=25, max_batches=100):
         result = invoke_match_events(
             {
                 "after_leg_id": after_leg_id,
-                "batch_size": min(25, max(1, int(batch_size))),
+                "batch_size": min(10, max(1, int(batch_size))),
             }
         ) or {}
 
@@ -241,7 +241,7 @@ def refresh_all_active_bets(batch_size=50, max_batches=100):
     """
 
     matching_events = _run_match_events_all(
-        batch_size=25,
+        batch_size=8,
         max_batches=max_batches,
     )
 
