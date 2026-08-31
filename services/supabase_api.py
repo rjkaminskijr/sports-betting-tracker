@@ -12,13 +12,31 @@ def _secret(name, default=None):
     if value:
         return value
 
-    # Streamlit Cloud / local .streamlit/secrets.toml support.
     try:
         import streamlit as st
+
+        # Support flat Streamlit secrets.
         if name in st.secrets:
             value = st.secrets[name]
             if value:
                 return str(value)
+
+        # Support the existing nested [supabase] section.
+        supabase = st.secrets.get("supabase", {})
+
+        nested_map = {
+            "SUPABASE_URL": "url",
+            "SUPABASE_SERVICE_ROLE_KEY": "service_role_key",
+            "BET_UPLOAD_TOKEN": "bet_upload_token",
+        }
+
+        nested_key = nested_map.get(name)
+
+        if nested_key and nested_key in supabase:
+            value = supabase[nested_key]
+            if value:
+                return str(value)
+
     except Exception:
         pass
 
