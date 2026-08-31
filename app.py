@@ -402,9 +402,15 @@ with tab_active:
     last_refresh_at = st.session_state.get('last_live_refresh_at')
 
     if last_refresh:
+        match_events = last_refresh.get('match_events') or {}
+        match_players = last_refresh.get('match_players') or {}
+
         st.success(
-            f"Updated {last_refresh.get('updated', 0)} leg(s) "
-            f"across {last_refresh.get('batches', 0)} batch(es). "
+            f"Matched events: {match_events.get('matched', 0)} "
+            f"across {match_events.get('batches', 0)} batch(es) • "
+            f"Matched players: {match_players.get('matched', 0)} • "
+            f"Updated live: {last_refresh.get('updated', 0)} leg(s) "
+            f"across {last_refresh.get('batches', 0)} batch(es) • "
             f"Skipped {last_refresh.get('skipped', 0)} • "
             f"Failed {last_refresh.get('failed', 0)}"
         )
