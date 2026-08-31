@@ -15,13 +15,17 @@ from database.db import (
     future_legs,
 )
 from services.espn_season import canonical_market, future_progress
-from services.supabase_api import refresh_all_active_bets, recheck_leg
+from services.supabase_api import (
+    refresh_all_active_bets,
+    recheck_leg,
+    list_round_robin_combinations,
+)
 
 st.set_page_config(page_title='Sports Bet Tracker', page_icon='🎟️', layout='wide')
 init_db()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 12.0 • Supabase-backed bet tracking + reviewed bet details')
+st.caption('Version 14.0 • Supabase-backed tracking + Round Robin combination details')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -262,6 +266,114 @@ def _render_leg_table(legs, bet=None):
         st.caption('No legs stored for this bet.')
 
 
+
+def _round_robin_status(value):
+    value = str(value or 'PENDING').strip().upper()
+    return value or 'PENDING'
+
+
+def _render_round_robin_combinations(bet, legs):
+    bet_type = str(bet.get('bet_type') or '').strip().upper()
+    is_round_robin = (
+        bet_type == 'ROUND_ROBIN'
+        or bet.get('round_robin_size') is not None
+        or bet.get('round_robin_combinations') is not None
+    )
+
+    if not is_round_robin:
+        return
+
+    try:
+        combinations = list_round_robin_combinations(bet['id'])
+    except Exception as exc:
+        st.warning(f'Could not load Round Robin combinations: {exc}')
+        return
+
+    st.markdown('#### Round Robin Combinations')
+
+    if not combinations:
+        st.caption('No stored Round Robin combinations were found for this bet.')
+        return
+
+    legs_by_id = {
+        int(leg['id']): leg
+        for leg in legs
+        if leg.get('id') is not None
+    }
+
+    rows = []
+
+    for combo in combinations:
+        combo_leg_names = []
+
+        for link in combo.get('combination_legs') or []:
+            leg_id = link.get('bet_leg_id')
+            leg = legs_by_id.get(int(leg_id)) if leg_id is not None else None
+
+            if leg:
+                selection = str(leg.get('selection') or '').strip()
+                market = str(leg.get('market') or '').strip()
+
+                if selection and market:
+                    combo_leg_names.append(f'{selection} — {market}')
+                elif selection:
+                    combo_leg_names.append(selection)
+                elif market:
+                    combo_leg_names.append(market)
+                else:
+                    combo_leg_names.append(f'Leg {leg_id}')
+            else:
+                combo_leg_names.append(f'Leg {leg_id}')
+
+        rows.append({
+            '#': combo.get('combination_index'),
+            'Legs': ' + '.join(combo_leg_names),
+            'Wager': _safe_float(combo.get('stake')),
+            'Odds': combo.get('odds'),
+            'Potential Payout': _safe_float(combo.get('potential_payout')),
+            'Paid': _safe_float(combo.get('actual_payout')),
+            'Status': _round_robin_status(combo.get('status')),
+        })
+
+    combo_df = pd.DataFrame(rows)
+
+    st.dataframe(
+        combo_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            '#': st.column_config.NumberColumn('#', width='small'),
+            'Legs': st.column_config.TextColumn('Legs', width='large'),
+            'Wager': st.column_config.NumberColumn('Wager', format='$%.2f'),
+            'Odds': st.column_config.NumberColumn('Odds', format='%+d'),
+            'Potential Payout': st.column_config.NumberColumn(
+                'Potential Payout',
+                format='$%.2f',
+            ),
+            'Paid': st.column_config.NumberColumn('Paid', format='$%.2f'),
+            'Status': st.column_config.TextColumn('Status', width='small'),
+        },
+    )
+
+    total_wager = sum(
+        _safe_float(combo.get('stake')) or 0.0
+        for combo in combinations
+    )
+    total_potential = sum(
+        _safe_float(combo.get('potential_payout')) or 0.0
+        for combo in combinations
+    )
+    total_paid = sum(
+        _safe_float(combo.get('actual_payout')) or 0.0
+        for combo in combinations
+    )
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric('Combination Wager Total', _money(total_wager))
+    c2.metric('Combination Potential Total', _money(total_potential))
+    c3.metric('Combination Paid Total', _money(total_paid))
+
+
 def _render_bet_metadata(bet, legs):
     description = _bet_description(bet, legs)
     st.markdown(f"### {description}")
@@ -305,6 +417,8 @@ def _render_bet_metadata(bet, legs):
 
     if bet.get('fanatics_share_url'):
         st.markdown(f"[Open Fanatics shared slip]({bet.get('fanatics_share_url')})")
+
+    _render_round_robin_combinations(bet, legs)
 
     st.markdown('#### Legs')
     _render_leg_table(legs, bet)
