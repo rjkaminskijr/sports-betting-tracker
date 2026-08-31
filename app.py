@@ -237,6 +237,15 @@ with tab_active:
             f"across {last_refresh.get('batches',0)} batch(es). "
             f"Skipped {last_refresh.get('skipped',0)} • Failed {last_refresh.get('failed',0)}"
         )
+        
+        if last_refresh.get('failed', 0):
+            with st.expander('Show refresh errors'):
+                failed_rows = [
+                    r for r in (last_refresh.get('results') or [])
+                    if not r.get('ok', False)
+                ]
+            st.json(failed_rows[:10])
+            
         if last_refresh_at:
             st.caption(f'Last app refresh: {last_refresh_at}')
 
