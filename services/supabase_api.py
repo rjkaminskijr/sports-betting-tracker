@@ -324,3 +324,59 @@ def refresh_all_active_bets(batch_size=50, max_batches=100):
 def recheck_leg(leg_id):
     """Force one leg through update-live-bets, even if its parent is settled."""
     return invoke_update_live_bets({"leg_id": int(leg_id)})
+
+def list_round_robin_combinations(bet_id):
+    """
+    Return Round Robin combinations plus their linked bet-leg IDs.
+
+    This is read-only and uses the existing server-side Supabase service
+    role configuration. It does not modify settlement data.
+    """
+    bet_id = int(bet_id)
+
+    combos = rest_request(
+        "bet_combinations",
+        query={
+            "select": (
+                "id,bet_row_id,combination_index,stake,odds,"
+                "potential_payout,actual_payout,status,created_at"
+            ),
+            "bet_row_id": f"eq.{bet_id}",
+            "order": "combination_index.asc",
+        },
+    ) or []
+
+    if not combos:
+        return []
+
+    combo_ids = [
+        int(row["id"])
+        for row in combos
+        if row.get("id") is not None
+    ]
+
+    links = []
+    if combo_ids:
+        id_filter = ",".join(str(x) for x in combo_ids)
+        links = rest_request(
+            "bet_combination_legs",
+            query={
+                "select": "combination_id,bet_leg_id,leg_position",
+                "combination_id": f"in.({id_filter})",
+                "order": "combination_id.asc,leg_position.asc",
+            },
+        ) or []
+
+    links_by_combo = {}
+    for row in links:
+        cid = row.get("combination_id")
+        links_by_combo.setdefault(cid, []).append(row)
+
+    for combo in combos:
+        combo["combination_legs"] = links_by_combo.get(
+            combo.get("id"),
+            [],
+        )
+
+    return combos
+
