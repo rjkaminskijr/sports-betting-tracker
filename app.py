@@ -1,74 +1,31 @@
 import io
-import hmac
 from datetime import datetime
 from PIL import Image
 import pandas as pd
 import streamlit as st
 from ocr.extractor import extract_text
 from importers.draftkings.parser import parse_draftkings
-from importers.screenshot import parse_screenshot, detect_sportsbook
 from services.duplicate_detector import sha256_bytes
-from database.db import init_db, save_bet, replace_bet, is_duplicate, list_bets, list_legs, update_leg_live, update_bet_espn_scope, update_leg_future_settings, update_leg_future_line_direction, update_leg_future_live, future_legs, storage_backend_name, cloud_enabled
+from database.db import init_db, save_bet, replace_bet, is_duplicate, list_bets, list_legs, update_leg_live, update_bet_espn_scope, update_leg_future_settings, update_leg_future_live, update_leg_line_direction, update_leg_manual_status, future_legs
 from services.espn_nfl import find_event, event_snapshot, game_summary, snapshot_display, team_for_player
 from services.progress import evaluate_leg, parlay_state, progress_text
 from services.gmail_import import scan_label
 from services.espn_season import canonical_market, future_progress
 from importers.fanatics.parser import parse_fanatics_share_url
-from services.screenshot_storage import save_screenshot
+from services.supabase_api import refresh_all_active_bets, recheck_leg
 
 st.set_page_config(page_title='Sports Bet Tracker', page_icon='🎟️', layout='wide')
-
-
-def require_login():
-    """Require credentials stored in Streamlit Secrets before rendering the tracker."""
-    try:
-        auth = st.secrets["auth"]
-        expected_username = str(auth["username"])
-        expected_password = str(auth["password"])
-    except Exception:
-        st.error(
-            "Login is not configured. Add [auth] username and password values "
-            "to Streamlit Secrets before using this deployment."
-        )
-        st.stop()
-
-    if st.session_state.get("authenticated") is True:
-        with st.sidebar:
-            st.caption(f"Signed in as **{expected_username}**")
-            if st.button("Log out", use_container_width=True):
-                st.session_state["authenticated"] = False
-                st.rerun()
-        return
-
-    st.title("🎟️ Sports Bet Tracker")
-    st.caption("Private access")
-
-    with st.form("login_form", clear_on_submit=False):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Log in", type="primary", use_container_width=True)
-
-    if submitted:
-        username_ok = hmac.compare_digest(username, expected_username)
-        password_ok = hmac.compare_digest(password, expected_password)
-        if username_ok and password_ok:
-            st.session_state["authenticated"] = True
-            st.rerun()
-        else:
-            st.error("Incorrect username or password.")
-
-    st.stop()
-
-
-require_login()
 init_db()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 8.2 Cloud • Private login • DraftKings + FanDuel + Fanatics screenshot import • Supabase persistence • ESPN NFL live tracking')
-st.caption(f'Data storage: **{storage_backend_name()}**')
+st.caption('Version 8.0 • Supabase-backed bet tracking + on-demand live refresh')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
+
+ACTIVE_STATUSES={'PENDING','OPEN','LIVE','IN_PROGRESS'}
+SETTLED_STATUSES={'WON','LOST','PUSH','VOID','VOIDED','CANCELLED','CANCELED','CASHED_OUT'}
+def _is_active_status(v): return str(v or '').upper() in ACTIVE_STATUSES
 
 def refresh_bet_live(bet):
     results=[]
@@ -120,17 +77,13 @@ def refresh_bet_live(bet):
 tab_dash, tab_email, tab_import, tab_fanatics, tab_active, tab_futures, tab_history = st.tabs(['Dashboard','Email Import','Import Bets','Fanatics Import','Active Bets','Season Futures','History'])
 
 with tab_dash:
-    all_bets=list_bets(); open_bets=[b for b in all_bets if b.get('status')=='OPEN']
+    all_bets=list_bets(); open_bets=[b for b in all_bets if _is_active_status(b.get('status'))]
     c1,c2,c3,c4=st.columns(4)
     c1.metric('Active Bets',len(open_bets)); c2.metric('Total Bets',len(all_bets))
     total_stake=sum(float(b.get('stake') or 0) for b in all_bets); c3.metric('Total Wagered',_money(total_stake))
     pnl=sum((float(b.get('paid') or 0)-float(b.get('stake') or 0)) if b.get('status')=='WON' else (-float(b.get('stake') or 0) if b.get('status')=='LOST' else 0) for b in all_bets)
     c4.metric('Settled P/L',_money(pnl))
     st.info('Live tracking is enabled for NFL bets first. Other sports remain stored normally and will be added later.')
-    if not cloud_enabled():
-        st.warning('Cloud storage is not configured yet. The tracker is using local SQLite. Follow CLOUD_SETUP.md to connect Supabase before deploying to Streamlit Community Cloud.')
-    else:
-        st.success('Cloud mode is active. Bets are stored in Supabase and are available from your phone without your PC running.')
 
 
 with tab_email:
@@ -195,19 +148,17 @@ with tab_email:
         st.caption('Tip: once the parser is reliable on your bet formats, we can change this page to one-click “Import All New Bets.”')
 
 with tab_import:
-    st.subheader('Import Bet Screenshots')
-    st.caption('Upload DraftKings, FanDuel, or Fanatics screenshots. The sportsbook is detected automatically, then you can review the parsed fields before saving.')
-    files=st.file_uploader('Upload bet screenshots',type=['png','jpg','jpeg'],accept_multiple_files=True)
+    files=st.file_uploader('Upload DraftKings screenshots',type=['png','jpg','jpeg'],accept_multiple_files=True)
     if files:
         for idx,f in enumerate(files):
             raw=f.getvalue(); h=sha256_bytes(raw); img=Image.open(io.BytesIO(raw))
             with st.expander(f'{idx+1}. {f.name}',expanded=(idx==0)):
                 c1,c2=st.columns([1,1.15])
                 with c1: st.image(img,use_container_width=True)
-                text=extract_text(img, sparse=True); parsed=parse_screenshot(text); parsed['screenshot_hash']=h; parsed['source_filename']=f.name
+                text=extract_text(img); parsed=parse_draftkings(text); parsed['screenshot_hash']=h; parsed['source_filename']=f.name
                 dup=is_duplicate(h,parsed.get('sportsbook_bet_id'))
                 with c2:
-                    if dup: st.warning('Possible duplicate: screenshot hash or sportsbook bet ID already saved.')
+                    if dup: st.warning('Possible duplicate: screenshot hash or DraftKings bet ID already saved.')
                     statuses=['OPEN','WON','LOST','PUSH','VOID','CASHED_OUT','UNKNOWN']; types=['SINGLE','PARLAY','SGP']
                     status=st.selectbox('Status',statuses,index=statuses.index(parsed['status']) if parsed['status'] in statuses else -1,key=f's{idx}')
                     bt=st.selectbox('Bet type',types,index=types.index(parsed['bet_type']) if parsed['bet_type'] in types else 0,key=f'b{idx}')
@@ -215,10 +166,9 @@ with tab_import:
                     stake=a.number_input('Wager',min_value=0.0,value=float(parsed['money']['stake'] or 0),step=1.0,key=f'w{idx}')
                     odds=b.number_input('Odds',value=int(parsed['odds']['current'] or 0),step=1,key=f'o{idx}')
                     payout=c.number_input('To Pay / Paid',min_value=0.0,value=float(parsed['money']['to_pay'] or parsed['money']['paid'] or 0),step=1.0,key=f'p{idx}')
-                    sb=st.text_input('Sportsbook',parsed.get('sportsbook') or detect_sportsbook(text),key=f'sb{idx}')
-                    betid=st.text_input('Sportsbook bet ID',parsed.get('sportsbook_bet_id') or '',key=f'i{idx}')
+                    betid=st.text_input('DraftKings bet ID',parsed.get('sportsbook_bet_id') or '',key=f'i{idx}')
                     headline=st.text_input('Headline',parsed.get('headline') or '',key=f'h{idx}'); subtitle=st.text_input('Subtitle / market',parsed.get('subtitle') or '',key=f'u{idx}')
-                    parsed.update({'sportsbook':sb or parsed.get('sportsbook') or 'Unknown','status':status,'bet_type':bt,'sportsbook_bet_id':betid or None,'headline':headline or None,'subtitle':subtitle or None}); parsed['odds']['current']=odds; parsed['money']['stake']=stake
+                    parsed.update({'status':status,'bet_type':bt,'sportsbook_bet_id':betid or None,'headline':headline or None,'subtitle':subtitle or None}); parsed['odds']['current']=odds; parsed['money']['stake']=stake
                     if status=='OPEN': parsed['money']['to_pay']=payout; parsed['money']['paid']=None
                     elif status=='WON': parsed['money']['paid']=payout; parsed['money']['to_pay']=None
                     st.write('**Detected legs**')
@@ -231,17 +181,7 @@ with tab_import:
                             replace_bet(parsed); st.success('Existing bet replaced with the newly parsed version.')
                     else:
                         if st.button('Save Bet',key=f'save{idx}'):
-                            try:
-                                path, url = save_screenshot(raw, f.name, parsed.get('sportsbook'))
-                                parsed['screenshot_path'] = path
-                                parsed['screenshot_url'] = url
-                                save_bet(parsed)
-                                if cloud_enabled():
-                                    st.success('Saved to Supabase Cloud. The screenshot source is persisted too.')
-                                else:
-                                    st.success('Saved to local bet_tracker.db. Configure Supabase to enable cloud persistence.')
-                            except Exception as e:
-                                st.error(f'Save failed: {e}')
+                            save_bet(parsed); st.success('Saved to bet_tracker.db')
                 with st.expander('OCR / normalized JSON'): st.text(text); st.json(parsed)
 
 
@@ -272,56 +212,132 @@ with tab_fanatics:
                 save_bet(fbet); st.success('Fanatics bet IDs saved.'); st.rerun()
 
 with tab_active:
+    st.subheader('Active Bets')
     rows=list_bets('OPEN')
-    if not rows: st.info('No open bets saved yet.')
+
+    top1,top2=st.columns([1.2,4.8])
+    do_refresh=top1.button('↻ Refresh Bets',type='primary',disabled=(len(rows)==0))
+    top2.caption('Refreshes only active/open bets through Supabase. Settled bets are skipped automatically.')
+
+    if do_refresh:
+        try:
+            with st.spinner('Updating active bets...'):
+                refresh_result=refresh_all_active_bets(batch_size=50)
+            st.session_state['last_live_refresh']=refresh_result
+            st.session_state['last_live_refresh_at']=datetime.now().isoformat(timespec='seconds')
+            st.rerun()
+        except Exception as e:
+            st.error(f'Live refresh failed: {e}')
+
+    last_refresh=st.session_state.get('last_live_refresh')
+    last_refresh_at=st.session_state.get('last_live_refresh_at')
+    if last_refresh:
+        st.success(
+            f"Updated {last_refresh.get('updated',0)} leg(s) "
+            f"across {last_refresh.get('batches',0)} batch(es). "
+            f"Skipped {last_refresh.get('skipped',0)} • Failed {last_refresh.get('failed',0)}"
+        )
+        if last_refresh_at:
+            st.caption(f'Last app refresh: {last_refresh_at}')
+
+    # Reload after a possible Edge Function refresh.
+    rows=list_bets('OPEN')
+
+    if not rows:
+        st.info('No active bets. Settled bets remain in History and are not refreshed automatically.')
     else:
-        top1,top2=st.columns([1,4])
-        do_refresh=top1.button('↻ Refresh ESPN',type='primary')
-        top2.caption('NFL data is pulled from ESPN when you refresh. Scheduled games show as PREGAME; live games show score/status and supported props show current progress.')
         for bet in rows:
             with st.container(border=True):
                 h1,h2,h3,h4=st.columns([4,1,1,1])
                 h1.subheader(bet.get('headline') or bet.get('sportsbook_bet_id') or 'Bet')
-                h2.metric('Wager',_money(bet.get('stake'))); h3.metric('Odds',_odds(bet.get('current_odds'))); h4.metric('To Pay',_money(bet.get('to_pay')))
-                st.caption(f"{bet.get('sportsbook_bet_id') or ''} • {bet.get('sport') or 'Unknown sport'} • {bet.get('placed_at') or ''}")
+                h2.metric('Wager',_money(bet.get('stake')))
+                h3.metric('Odds',_odds(bet.get('current_odds')))
+                h4.metric('To Pay',_money(bet.get('to_pay')))
+
+                st.caption(
+                    f"{bet.get('sportsbook_bet_id') or ''} • "
+                    f"{bet.get('sport') or 'Unknown sport'} • "
+                    f"{bet.get('placed_at') or ''}"
+                )
+
                 if bet.get('draftkings_share_url'):
                     st.markdown(f"[Open DraftKings shared slip]({bet.get('draftkings_share_url')})")
 
-                # Per-bet ESPN schedule scope. Leave Auto for normal slips with
-                # printed event dates; pin season/week for futures or Week 1
-                # parlays whose screenshots do not contain the matchup date.
+                # Existing per-bet schedule overrides are still useful for any
+                # imported ticket that needs explicit season/week scoping.
                 if (bet.get('sport') or '').upper() == 'NFL':
                     scope_cols=st.columns([1.7,1,1,1,1.1])
                     current_type=bet.get('espn_season_type')
                     scope_label={1:'Preseason',2:'Regular Season',3:'Postseason'}.get(current_type,'Auto')
                     season_label=scope_cols[0].selectbox(
-                        'ESPN schedule', ['Auto','Preseason','Regular Season','Postseason'],
+                        'ESPN schedule',
+                        ['Auto','Preseason','Regular Season','Postseason'],
                         index=['Auto','Preseason','Regular Season','Postseason'].index(scope_label),
                         key=f"scope_{bet['id']}"
                     )
-                    default_year=int(bet.get('espn_season_year') or (str(bet.get('placed_at') or '')[:4] if str(bet.get('placed_at') or '')[:4].isdigit() else datetime.now().year))
-                    season_year=scope_cols[1].number_input('Season', min_value=2020, max_value=2100, value=default_year, step=1, key=f"year_{bet['id']}")
+                    default_year=int(
+                        bet.get('espn_season_year')
+                        or (
+                            str(bet.get('placed_at') or '')[:4]
+                            if str(bet.get('placed_at') or '')[:4].isdigit()
+                            else datetime.now().year
+                        )
+                    )
+                    season_year=scope_cols[1].number_input(
+                        'Season',
+                        min_value=2020,
+                        max_value=2100,
+                        value=default_year,
+                        step=1,
+                        key=f"year_{bet['id']}"
+                    )
                     week_value=int(bet.get('espn_week') or 1)
-                    week_num=scope_cols[2].number_input('Week', min_value=1, max_value=25, value=week_value, step=1, key=f"week_{bet['id']}")
+                    week_num=scope_cols[2].number_input(
+                        'Week',
+                        min_value=1,
+                        max_value=25,
+                        value=week_value,
+                        step=1,
+                        key=f"week_{bet['id']}"
+                    )
                     if scope_cols[3].button('Save', key=f"save_scope_{bet['id']}"):
                         type_num={'Preseason':1,'Regular Season':2,'Postseason':3}.get(season_label)
                         if season_label=='Auto':
                             update_bet_espn_scope(bet['id'], None, None, None)
                         else:
-                            update_bet_espn_scope(bet['id'], int(season_year), type_num, int(week_num))
-                        st.success('ESPN schedule setting saved. Click Refresh ESPN.')
+                            update_bet_espn_scope(
+                                bet['id'],
+                                int(season_year),
+                                type_num,
+                                int(week_num)
+                            )
+                        st.success('ESPN schedule setting saved.')
                         st.rerun()
-                    saved_scope = 'Auto' if not current_type else f"{scope_label} W{bet.get('espn_week') or '?'} {bet.get('espn_season_year') or ''}"
+                    saved_scope='Auto' if not current_type else f"{scope_label} W{bet.get('espn_week') or '?'} {bet.get('espn_season_year') or ''}"
                     scope_cols[4].caption(f"Saved: {saved_scope}")
 
-                live=refresh_bet_live(bet) if do_refresh else [(l,{'state':l.get('live_state') or 'PENDING','current':l.get('live_value')}) for l in list_legs(bet['id'])]
-                states=[]; display=[]
-                for leg,prog in live:
-                    state=prog.get('state') or 'PENDING'; states.append(state)
-                    cur=progress_text(prog) if do_refresh else (leg.get('live_value') or prog.get('current'))
-                    display.append({'#':leg.get('leg_index'),'Selection':leg.get('selection'),'Market':leg.get('market'),'Line':leg.get('line_value'),'Odds':leg.get('odds'),'Live':cur,'State':state})
-                if display: st.dataframe(pd.DataFrame(display),use_container_width=True,hide_index=True)
-                st.write(f"**Bet progress:** {parlay_state(states) if len(states)>1 else (states[0] if states else 'PENDING')}")
+                legs=list_legs(bet['id'])
+                display=[]
+                for leg in legs:
+                    display.append({
+                        '#':leg.get('leg_index'),
+                        'Selection':leg.get('selection'),
+                        'Market':leg.get('market'),
+                        'Line':leg.get('line_value'),
+                        'Odds':leg.get('odds'),
+                        'Live':leg.get('live_value'),
+                        'Game State':leg.get('live_state') or leg.get('future_state'),
+                        'Status':leg.get('status') or 'PENDING',
+                    })
+
+                if display:
+                    st.dataframe(
+                        pd.DataFrame(display),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                st.write(f"**Bet status:** {bet.get('status') or 'PENDING'}")
 
 
 with tab_futures:
@@ -353,8 +369,8 @@ with tab_futures:
         except Exception: pass
         line=c3.number_input('Line',min_value=0.0,value=line_default,step=0.5,key='futureline')
         if st.button('Track this leg as season future'):
-            # Preserve the user's normalized line/direction directly on the leg.
-            update_leg_future_line_direction(lg['id'], line, direction)
+            # Preserve the user's normalized line/direction directly on the Supabase leg.
+            update_leg_line_direction(lg['id'], line, direction)
             update_leg_future_settings(lg['id'],'SEASON',int(yr),2)
             st.success('Season-future tracking enabled for this leg.')
             st.rerun()
@@ -390,6 +406,67 @@ with tab_futures:
 with tab_history:
     rows=list_bets()
     if rows:
-        df=pd.DataFrame(rows); show=['status','sportsbook_bet_id','headline','stake','current_odds','paid','to_pay','sport','placed_at']; st.dataframe(df[show],use_container_width=True,hide_index=True)
-        st.download_button('Export CSV',df[show].to_csv(index=False).encode(),'bet_history.csv','text/csv')
-    else: st.info('No bets saved yet.')
+        df=pd.DataFrame(rows)
+        show=['status','sportsbook_bet_id','headline','stake','current_odds','paid','to_pay','sport','placed_at']
+        existing=[c for c in show if c in df.columns]
+        st.dataframe(df[existing],use_container_width=True,hide_index=True)
+        st.download_button(
+            'Export CSV',
+            df[existing].to_csv(index=False).encode(),
+            'bet_history.csv',
+            'text/csv'
+        )
+
+        settled=[b for b in rows if str(b.get('status') or '').upper() in SETTLED_STATUSES]
+        if settled:
+            st.markdown('#### Manual settled-bet recheck')
+            st.caption('Settled bets are skipped during normal Refresh Bets. Use this only for a stat correction or sportsbook adjustment.')
+            options={
+                f"Bet {b['id']} • {b.get('sportsbook') or ''} • {b.get('headline') or b.get('sportsbook_bet_id') or ''} • {b.get('status')}":b
+                for b in settled
+            }
+            chosen=st.selectbox('Settled bet',list(options.keys()),key='settled_recheck_bet')
+            chosen_bet=options[chosen]
+            if st.button('Recheck selected settled bet'):
+                try:
+                    legs=list_legs(chosen_bet['id'])
+                    if not legs:
+                        st.warning('This bet has no legs to recheck.')
+                    else:
+                        results=[]
+                        with st.spinner('Rechecking settled bet...'):
+                            for leg in legs:
+                                results.append(recheck_leg(leg['id']))
+                        st.success(f"Rechecked {len(results)} leg(s).")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f'Recheck failed: {e}')
+
+        st.markdown('#### Manual VOID override')
+        st.caption('Use this when the sportsbook explicitly voids a leg. Parent/parlay settlement will be recalculated on the next Refresh Bets or manual recheck.')
+        bet_options={
+            f"Bet {b['id']} • {b.get('sportsbook') or ''} • {b.get('headline') or b.get('sportsbook_bet_id') or ''}":b
+            for b in rows
+        }
+        void_bet_label=st.selectbox('Bet for VOID override',list(bet_options.keys()),key='void_bet')
+        void_bet=bet_options[void_bet_label]
+        void_legs=list_legs(void_bet['id'])
+        if void_legs:
+            leg_options={
+                f"Leg {lg['id']} • {lg.get('selection') or ''} • {lg.get('market') or ''} • {lg.get('status') or 'PENDING'}":lg
+                for lg in void_legs
+            }
+            void_leg_label=st.selectbox('Leg to VOID',list(leg_options.keys()),key='void_leg')
+            void_leg=leg_options[void_leg_label]
+            if st.button('Mark selected leg VOID'):
+                try:
+                    update_leg_manual_status(void_leg['id'],'VOID')
+                    # Direct recheck would overwrite a sportsbook-specific VOID
+                    # from ESPN, so we intentionally leave the manual override as-is.
+                    st.success('Leg marked VOID. Parent settlement will honor the manual status.')
+                    st.rerun()
+                except Exception as e:
+                    st.error(f'VOID update failed: {e}')
+    else:
+        st.info('No bets saved yet.')
+
