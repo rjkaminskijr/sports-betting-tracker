@@ -3,19 +3,6 @@ from datetime import datetime
 from PIL import Image
 import pandas as pd
 import streamlit as st
-st.write("Secret keys loaded:", list(st.secrets.keys()))
-st.write(
-    "Has SUPABASE_URL:",
-    "SUPABASE_URL" in st.secrets
-)
-st.write(
-    "Has SUPABASE_SERVICE_ROLE_KEY:",
-    "SUPABASE_SERVICE_ROLE_KEY" in st.secrets
-)
-st.write(
-    "Has BET_UPLOAD_TOKEN:",
-    "BET_UPLOAD_TOKEN" in st.secrets
-)
 from ocr.extractor import extract_text
 from importers.draftkings.parser import parse_draftkings
 from services.duplicate_detector import sha256_bytes
