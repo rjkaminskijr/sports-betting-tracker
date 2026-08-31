@@ -390,3 +390,243 @@ def list_round_robin_combinations(bet_id):
 
     return combos
 
+# ----------------------------------------------------------------------
+# Season Futures — Supabase-backed helpers
+# ----------------------------------------------------------------------
+
+SUPPORTED_SEASON_MARKETS = {
+    "passing yards",
+    "passing tds",
+    "passing touchdowns",
+    "interceptions",
+    "rushing yards",
+    "rushing tds",
+    "rushing touchdowns",
+    "receiving yards",
+    "receptions",
+    "receiving tds",
+    "receiving touchdowns",
+    "regular season passing yards",
+    "regular season passing tds",
+    "regular season passing touchdowns",
+    "regular season interceptions",
+    "regular season rushing yards",
+    "regular season rushing tds",
+    "regular season rushing touchdowns",
+    "regular season receiving yards",
+    "regular season receptions",
+    "regular season receiving tds",
+    "regular season receiving touchdowns",
+}
+
+
+def is_supported_season_market(market):
+    value = str(market or "").strip().lower()
+    return value in SUPPORTED_SEASON_MARKETS
+
+
+def list_supabase_bets(sport=None):
+    query = {
+        "select": (
+            "id,sportsbook,sportsbook_bet_id,status,bet_type,leg_count,"
+            "current_odds,stake,to_pay,paid,placed_at,source_captured_at,"
+            "sport,headline,espn_season_year,espn_season_type,espn_week"
+        ),
+        "order": "id.desc",
+    }
+
+    if sport:
+        query["sport"] = f"eq.{str(sport).upper()}"
+
+    return rest_request(
+        "bets",
+        query=query,
+    ) or []
+
+
+def list_supabase_legs(bet_id):
+    return rest_request(
+        "bet_legs",
+        query={
+            "select": (
+                "id,bet_row_id,leg_index,selection,market,line_value,"
+                "direction,odds,status,event_team_a,event_team_b,"
+                "espn_event_id,espn_athlete_id,tracking_scope,"
+                "future_season_year,future_season_type,future_state,"
+                "future_current,future_games_played,future_pace,"
+                "future_updated_at,espn_season_year,espn_season_type,"
+                "espn_week"
+            ),
+            "bet_row_id": f"eq.{int(bet_id)}",
+            "order": "leg_index.asc,id.asc",
+        },
+    ) or []
+
+
+def list_future_candidates():
+    rows = []
+
+    for bet in list_supabase_bets("NFL"):
+        for leg in list_supabase_legs(bet["id"]):
+            if not is_supported_season_market(leg.get("market")):
+                continue
+
+            row = dict(leg)
+            row["bet_headline"] = bet.get("headline")
+            row["bet_sport"] = bet.get("sport")
+            row["bet_status"] = bet.get("status")
+            row["bet_odds"] = bet.get("current_odds")
+            row["bet_stake"] = bet.get("stake")
+            row["bet_to_pay"] = bet.get("to_pay")
+            rows.append(row)
+
+    return rows
+
+
+def list_future_legs():
+    legs = rest_request(
+        "bet_legs",
+        query={
+            "select": (
+                "id,bet_row_id,leg_index,selection,market,line_value,"
+                "direction,odds,status,event_team_a,event_team_b,"
+                "espn_event_id,espn_athlete_id,tracking_scope,"
+                "future_season_year,future_season_type,future_state,"
+                "future_current,future_games_played,future_pace,"
+                "future_updated_at,espn_season_year,espn_season_type,"
+                "espn_week"
+            ),
+            "tracking_scope": "eq.SEASON",
+            "order": "bet_row_id.desc,leg_index.asc,id.asc",
+        },
+    ) or []
+
+    if not legs:
+        return []
+
+    bet_ids = sorted({
+        int(leg["bet_row_id"])
+        for leg in legs
+        if leg.get("bet_row_id") is not None
+    })
+
+    bet_map = {}
+    for bet_id in bet_ids:
+        bets = rest_request(
+            "bets",
+            query={
+                "select": (
+                    "id,headline,sport,status,current_odds,stake,to_pay,"
+                    "paid,placed_at,source_captured_at"
+                ),
+                "id": f"eq.{bet_id}",
+                "limit": "1",
+            },
+        ) or []
+
+        if bets:
+            bet_map[bet_id] = bets[0]
+
+    rows = []
+    for leg in legs:
+        row = dict(leg)
+        bet = bet_map.get(int(leg["bet_row_id"]), {})
+        row["bet_headline"] = bet.get("headline")
+        row["bet_sport"] = bet.get("sport")
+        row["bet_status"] = bet.get("status")
+        row["bet_odds"] = bet.get("current_odds")
+        row["bet_stake"] = bet.get("stake")
+        row["bet_to_pay"] = bet.get("to_pay")
+        rows.append(row)
+
+    return rows
+
+
+def configure_future_leg(
+    leg_id,
+    line_value,
+    direction,
+    season_year,
+    season_type=2,
+):
+    direction = str(direction or "OVER").strip().upper()
+
+    if direction not in {"OVER", "UNDER"}:
+        raise ValueError("direction must be OVER or UNDER")
+
+    result = rest_request(
+        "bet_legs",
+        method="PATCH",
+        query={
+            "id": f"eq.{int(leg_id)}",
+        },
+        body={
+            "line_value": float(line_value),
+            "direction": direction,
+            "tracking_scope": "SEASON",
+            "future_season_year": int(season_year),
+            "future_season_type": int(season_type),
+            "status": "PENDING",
+        },
+        prefer="return=representation",
+    )
+
+    return result or []
+
+
+def refresh_future_leg(leg_id):
+    """
+    Refresh a season future entirely through Supabase Edge Functions.
+
+    1) match-players ensures the ESPN athlete ID exists.
+    2) update-live-bets handles the SEASON stat lookup and persists
+       future_current / games / pace / state.
+    """
+    leg_id = int(leg_id)
+
+    match_result = invoke_match_players({
+        "leg_id": leg_id,
+    }) or {}
+
+    update_result = invoke_update_live_bets({
+        "leg_id": leg_id,
+    }) or {}
+
+    return {
+        "ok": bool(update_result.get("ok", False)),
+        "match_players": match_result,
+        "update_live_bets": update_result,
+    }
+
+
+def refresh_all_future_legs():
+    rows = list_future_legs()
+    results = []
+
+    for leg in rows:
+        leg_id = int(leg["id"])
+
+        try:
+            result = refresh_future_leg(leg_id)
+            results.append({
+                "leg_id": leg_id,
+                "selection": leg.get("selection"),
+                "ok": bool(result.get("ok")),
+                "result": result,
+            })
+        except Exception as exc:
+            results.append({
+                "leg_id": leg_id,
+                "selection": leg.get("selection"),
+                "ok": False,
+                "error": str(exc),
+            })
+
+    return {
+        "ok": all(row.get("ok") for row in results) if results else True,
+        "processed": len(results),
+        "successful": sum(1 for row in results if row.get("ok")),
+        "failed": sum(1 for row in results if not row.get("ok")),
+        "results": results,
+    }
+
