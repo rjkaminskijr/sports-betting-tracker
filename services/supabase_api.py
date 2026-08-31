@@ -325,6 +325,16 @@ def recheck_leg(leg_id):
     """Force one leg through update-live-bets, even if its parent is settled."""
     return invoke_update_live_bets({"leg_id": int(leg_id)})
 
+
+def recalculate_parent_from_manual_leg(leg_id):
+    """
+    Recalculate parent/Round Robin settlement from the leg status already
+    stored in Supabase WITHOUT asking ESPN to grade the leg again.
+    """
+    return invoke_update_live_bets({
+        "settlement_only_leg_id": int(leg_id),
+    })
+
 def list_round_robin_combinations(bet_id):
     """
     Return Round Robin combinations plus their linked bet-leg IDs.
