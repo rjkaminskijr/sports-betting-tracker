@@ -1,4 +1,5 @@
 from datetime import datetime
+import hmac
 
 import pandas as pd
 import streamlit as st
@@ -22,10 +23,126 @@ from services.supabase_api import (
 )
 
 st.set_page_config(page_title='Sports Bet Tracker', page_icon='🎟️', layout='wide')
+
+
+def _auth_secret(auth, *names):
+    for name in names:
+        try:
+            value = auth.get(name)
+        except Exception:
+            value = None
+
+        if value is not None and str(value) != '':
+            return str(value)
+
+    return None
+
+
+def _require_login():
+    """
+    Protect the Streamlit UI using the existing nested [auth] section
+    in .streamlit/secrets.toml / Streamlit Cloud secrets.
+
+    Supported existing layouts:
+
+        [auth]
+        username = "..."
+        password = "..."
+
+    Password-only [auth] also works if no username is configured.
+    """
+    try:
+        auth = st.secrets.get('auth', {})
+    except Exception:
+        auth = {}
+
+    expected_username = _auth_secret(
+        auth,
+        'username',
+        'user',
+        'email',
+    )
+
+    expected_password = _auth_secret(
+        auth,
+        'password',
+        'pass',
+    )
+
+    if not expected_password:
+        st.error(
+            'App login is enabled, but no password was found in the '
+            'existing [auth] section of Streamlit secrets.'
+        )
+        st.code(
+            '[auth]\n'
+            'username = "your_username"\n'
+            'password = "your_password"',
+            language='toml',
+        )
+        st.stop()
+
+    if st.session_state.get('authenticated') is True:
+        return
+
+    st.title('Sports Bet Tracker')
+    st.subheader('Sign in')
+
+    with st.form('login_form', clear_on_submit=False):
+        username = None
+
+        if expected_username:
+            username = st.text_input(
+                'Username',
+                autocomplete='username',
+            )
+
+        password = st.text_input(
+            'Password',
+            type='password',
+            autocomplete='current-password',
+        )
+
+        submitted = st.form_submit_button(
+            'Sign in',
+            type='primary',
+        )
+
+    if submitted:
+        username_ok = (
+            True
+            if expected_username is None
+            else hmac.compare_digest(
+                str(username or ''),
+                expected_username,
+            )
+        )
+
+        password_ok = hmac.compare_digest(
+            str(password or ''),
+            expected_password,
+        )
+
+        if username_ok and password_ok:
+            st.session_state['authenticated'] = True
+            st.rerun()
+
+        st.error('Incorrect username or password.')
+
+    st.stop()
+
+
+_require_login()
 init_db()
 
+logout_col, _ = st.columns([1, 8])
+with logout_col:
+    if st.button('Log out'):
+        st.session_state.pop('authenticated', None)
+        st.rerun()
+
 st.title('Sports Bet Tracker')
-st.caption('Version 19.0 • Expandable bet list + Supabase-backed tracking')
+st.caption('Version 20.0 • Login restored + expandable Supabase-backed tracking')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
