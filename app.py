@@ -25,7 +25,7 @@ st.set_page_config(page_title='Sports Bet Tracker', page_icon='🎟️', layout=
 init_db()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 18.0 • Dashboard sport fallback + Supabase-backed tracking')
+st.caption('Version 19.0 • Expandable bet list + Supabase-backed tracking')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -422,6 +422,297 @@ def _render_bet_metadata(bet, legs):
 
     st.markdown('#### Legs')
     _render_leg_table(legs, bet)
+
+
+
+def _expander_bet_label(bet, legs):
+    description = _bet_description(bet, legs)
+
+    status = str(
+        bet.get('status') or 'PENDING'
+    ).strip().upper()
+
+    wager = _money(
+        bet.get('stake')
+    )
+
+    odds = _odds(
+        bet.get('current_odds')
+        if bet.get('current_odds') is not None
+        else bet.get('original_odds')
+    )
+
+    return (
+        f"{description}  •  "
+        f"{status}  •  "
+        f"{wager}  •  {odds}"
+    )
+
+
+def _render_bet_expanders(bets, key_prefix, show_schedule_override=False):
+    """
+    Render one native Streamlit expander per bet.
+
+    The expander arrow is the primary navigation: click the bet
+    description to reveal its legs and details directly underneath.
+    """
+    if not bets:
+        return
+
+    for bet in bets:
+        legs = list_legs(
+            bet['id']
+        )
+
+        label = _expander_bet_label(
+            bet,
+            legs,
+        )
+
+        with st.expander(
+            label,
+            expanded=False,
+        ):
+            m1, m2, m3, m4, m5 = st.columns(5)
+
+            m1.metric(
+                'Wager',
+                _money(
+                    bet.get('stake')
+                ),
+            )
+
+            m2.metric(
+                'Odds',
+                _odds(
+                    bet.get('current_odds')
+                    if bet.get('current_odds') is not None
+                    else bet.get('original_odds')
+                ),
+            )
+
+            m3.metric(
+                'To Pay',
+                _money(
+                    bet.get('to_pay')
+                ),
+            )
+
+            m4.metric(
+                'Paid',
+                _money(
+                    bet.get('paid')
+                ),
+            )
+
+            m5.metric(
+                'P/L',
+                _money(
+                    _profit_loss(
+                        bet
+                    )
+                ),
+            )
+
+            st.caption(
+                f"{bet.get('sportsbook') or ''}"
+                f" • {_display_sport(bet, legs)}"
+                f" • {len(legs)} leg(s)"
+                f" • {_format_datetime(bet.get('placed_at')) or 'Placed time unavailable'}"
+            )
+
+            _render_round_robin_combinations(
+                bet,
+                legs,
+            )
+
+            _render_leg_table(
+                legs,
+                bet,
+            )
+
+            # Less-frequently needed receipt/database details stay one
+            # level deeper so the main bet list remains compact.
+            with st.expander(
+                'Bet details',
+                expanded=False,
+            ):
+                detail_rows = {
+                    'Sportsbook': bet.get('sportsbook') or '',
+                    'Sportsbook Bet ID': bet.get('sportsbook_bet_id') or '',
+                    'Bet Type': bet.get('bet_type') or '',
+                    'Status': bet.get('status') or 'PENDING',
+                    'Sport': _display_sport(bet, legs),
+                    'Leg Count': bet.get('leg_count') or len(legs),
+                    'Placed At': _format_datetime(bet.get('placed_at')),
+                    'Screenshot Captured': _format_datetime(
+                        bet.get('source_captured_at')
+                    ),
+                }
+
+                if bet.get('round_robin_size'):
+                    detail_rows['Round Robin Size'] = bet.get(
+                        'round_robin_size'
+                    )
+
+                if bet.get('round_robin_combinations'):
+                    detail_rows['RR Combinations'] = bet.get(
+                        'round_robin_combinations'
+                    )
+
+                if bet.get('round_robin_wager_each') is not None:
+                    detail_rows['Wager / Combination'] = _money(
+                        bet.get('round_robin_wager_each')
+                    )
+
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {
+                                'Field': field,
+                                'Value': value,
+                            }
+                            for field, value in detail_rows.items()
+                        ]
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                if bet.get('draftkings_share_url'):
+                    st.markdown(
+                        f"[Open DraftKings shared slip]"
+                        f"({bet.get('draftkings_share_url')})"
+                    )
+
+                if bet.get('fanatics_share_url'):
+                    st.markdown(
+                        f"[Open Fanatics shared slip]"
+                        f"({bet.get('fanatics_share_url')})"
+                    )
+
+            if (
+                show_schedule_override
+                and _display_sport(bet, legs) == 'NFL'
+            ):
+                with st.expander(
+                    'ESPN Schedule Override',
+                    expanded=False,
+                ):
+                    scope_cols = st.columns(
+                        [1.7, 1, 1, 1, 1.1]
+                    )
+
+                    current_type = bet.get(
+                        'espn_season_type'
+                    )
+
+                    scope_label = {
+                        1: 'Preseason',
+                        2: 'Regular Season',
+                        3: 'Postseason',
+                    }.get(
+                        current_type,
+                        'Auto',
+                    )
+
+                    season_label = scope_cols[0].selectbox(
+                        'ESPN schedule',
+                        [
+                            'Auto',
+                            'Preseason',
+                            'Regular Season',
+                            'Postseason',
+                        ],
+                        index=[
+                            'Auto',
+                            'Preseason',
+                            'Regular Season',
+                            'Postseason',
+                        ].index(
+                            scope_label
+                        ),
+                        key=f"{key_prefix}_scope_{bet['id']}",
+                    )
+
+                    default_year = int(
+                        bet.get('espn_season_year')
+                        or (
+                            str(
+                                bet.get('placed_at') or ''
+                            )[:4]
+                            if str(
+                                bet.get('placed_at') or ''
+                            )[:4].isdigit()
+                            else datetime.now().year
+                        )
+                    )
+
+                    season_year = scope_cols[1].number_input(
+                        'Season',
+                        min_value=2020,
+                        max_value=2100,
+                        value=default_year,
+                        step=1,
+                        key=f"{key_prefix}_year_{bet['id']}",
+                    )
+
+                    week_num = scope_cols[2].number_input(
+                        'Week',
+                        min_value=1,
+                        max_value=25,
+                        value=int(
+                            bet.get('espn_week') or 1
+                        ),
+                        step=1,
+                        key=f"{key_prefix}_week_{bet['id']}",
+                    )
+
+                    if scope_cols[3].button(
+                        'Save',
+                        key=f"{key_prefix}_save_scope_{bet['id']}",
+                    ):
+                        type_num = {
+                            'Preseason': 1,
+                            'Regular Season': 2,
+                            'Postseason': 3,
+                        }.get(
+                            season_label
+                        )
+
+                        if season_label == 'Auto':
+                            update_bet_espn_scope(
+                                bet['id'],
+                                None,
+                                None,
+                                None,
+                            )
+                        else:
+                            update_bet_espn_scope(
+                                bet['id'],
+                                int(season_year),
+                                type_num,
+                                int(week_num),
+                            )
+
+                        st.success(
+                            'ESPN schedule setting saved.'
+                        )
+                        st.rerun()
+
+                    saved_scope = (
+                        'Auto'
+                        if not current_type
+                        else (
+                            f"{scope_label} "
+                            f"W{bet.get('espn_week') or '?'} "
+                            f"{bet.get('espn_season_year') or ''}"
+                        )
+                    )
+
+                    scope_cols[4].caption(
+                        f"Saved: {saved_scope}"
+                    )
 
 
 def _render_selectable_bet_table(bets, key):
@@ -1105,111 +1396,14 @@ with tab_active:
         )
     else:
         st.caption(
-            'Click a bet row to expand its legs and additional details below.'
+            'Click the arrow beside a bet to show its legs and details.'
         )
 
-        selected_bet, leg_map = _render_selectable_bet_table(
+        _render_bet_expanders(
             rows,
-            'active_bet_table',
+            'active',
+            show_schedule_override=True,
         )
-
-        if selected_bet:
-            legs = leg_map.get(selected_bet['id']) or list_legs(selected_bet['id'])
-
-            with st.container(border=True):
-                _render_bet_metadata(selected_bet, legs)
-
-                # Keep the manual ESPN schedule override available, but only
-                # show it for the selected bet instead of every active bet.
-                if _display_sport(selected_bet, legs) == 'NFL':
-                    st.markdown('#### ESPN Schedule Override')
-
-                    scope_cols = st.columns([1.7, 1, 1, 1, 1.1])
-                    current_type = selected_bet.get('espn_season_type')
-                    scope_label = {
-                        1: 'Preseason',
-                        2: 'Regular Season',
-                        3: 'Postseason',
-                    }.get(current_type, 'Auto')
-
-                    season_label = scope_cols[0].selectbox(
-                        'ESPN schedule',
-                        ['Auto', 'Preseason', 'Regular Season', 'Postseason'],
-                        index=[
-                            'Auto',
-                            'Preseason',
-                            'Regular Season',
-                            'Postseason',
-                        ].index(scope_label),
-                        key=f"scope_{selected_bet['id']}",
-                    )
-
-                    default_year = int(
-                        selected_bet.get('espn_season_year')
-                        or (
-                            str(selected_bet.get('placed_at') or '')[:4]
-                            if str(selected_bet.get('placed_at') or '')[:4].isdigit()
-                            else datetime.now().year
-                        )
-                    )
-
-                    season_year = scope_cols[1].number_input(
-                        'Season',
-                        min_value=2020,
-                        max_value=2100,
-                        value=default_year,
-                        step=1,
-                        key=f"year_{selected_bet['id']}",
-                    )
-
-                    week_value = int(selected_bet.get('espn_week') or 1)
-                    week_num = scope_cols[2].number_input(
-                        'Week',
-                        min_value=1,
-                        max_value=25,
-                        value=week_value,
-                        step=1,
-                        key=f"week_{selected_bet['id']}",
-                    )
-
-                    if scope_cols[3].button(
-                        'Save',
-                        key=f"save_scope_{selected_bet['id']}",
-                    ):
-                        type_num = {
-                            'Preseason': 1,
-                            'Regular Season': 2,
-                            'Postseason': 3,
-                        }.get(season_label)
-
-                        if season_label == 'Auto':
-                            update_bet_espn_scope(
-                                selected_bet['id'],
-                                None,
-                                None,
-                                None,
-                            )
-                        else:
-                            update_bet_espn_scope(
-                                selected_bet['id'],
-                                int(season_year),
-                                type_num,
-                                int(week_num),
-                            )
-
-                        st.success('ESPN schedule setting saved.')
-                        st.rerun()
-
-                    saved_scope = (
-                        'Auto'
-                        if not current_type
-                        else (
-                            f"{scope_label} "
-                            f"W{selected_bet.get('espn_week') or '?'} "
-                            f"{selected_bet.get('espn_season_year') or ''}"
-                        )
-                    )
-                    scope_cols[4].caption(f"Saved: {saved_scope}")
 
 
 with tab_futures:
@@ -1423,20 +1617,14 @@ with tab_history:
 
     if rows:
         st.caption(
-            'All bets are shown in one table. Click a row to expand the '
-            'full bet details and legs below.'
+            'Click the arrow beside a bet description to show its legs.'
         )
 
-        selected_bet, leg_map = _render_selectable_bet_table(
+        _render_bet_expanders(
             rows,
-            'history_bet_table',
+            'history',
+            show_schedule_override=False,
         )
-
-        if selected_bet:
-            legs = leg_map.get(selected_bet['id']) or list_legs(selected_bet['id'])
-
-            with st.container(border=True):
-                _render_bet_metadata(selected_bet, legs)
 
         export_rows, _ = _build_bet_table_rows(rows)
         export_df = pd.DataFrame(export_rows)
