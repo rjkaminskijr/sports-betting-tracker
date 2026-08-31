@@ -25,7 +25,7 @@ st.set_page_config(page_title='Sports Bet Tracker', page_icon='🎟️', layout=
 init_db()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 17.0 • Performance dashboard + Supabase-backed tracking')
+st.caption('Version 18.0 • Dashboard sport fallback + Supabase-backed tracking')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -518,11 +518,31 @@ def _dashboard_bet_type(bet):
 
 def _dashboard_sport(bet):
     value = str(bet.get('sport') or '').strip().upper()
+
     aliases = {
         'NCAAF': 'CFB',
         'COLLEGE FOOTBALL': 'CFB',
     }
-    return aliases.get(value, value or 'Unknown')
+
+    if value:
+        return aliases.get(value, value)
+
+    # Use the same leg-aware fallback that the bet detail view uses.
+    # This fixes historical bets whose parent bets.sport is NULL but
+    # whose legs are already matched to NFL players/events.
+    try:
+        legs = list_legs(bet['id'])
+        inferred = _display_sport(bet, legs)
+
+        if inferred and str(inferred).strip().upper() not in {'', 'UNKNOWN'}:
+            return aliases.get(
+                str(inferred).strip().upper(),
+                str(inferred).strip().upper(),
+            )
+    except Exception:
+        pass
+
+    return 'Unknown'
 
 
 def _dashboard_date(bet):
