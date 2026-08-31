@@ -142,7 +142,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 22.0 • Active Legs fix + login + expandable Supabase tracking')
+st.caption('Version 23.0 • Combined duplicate Active Legs + login + expandable Supabase tracking')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -1540,9 +1540,72 @@ def _render_active_legs_tab():
 
     df = pd.DataFrame(rows)
 
+    # Combine duplicate legs that represent the same wager.
+    # We deliberately keep different lines/directions/games separate.
+    group_cols = [
+        'Sport',
+        'Selection',
+        'Market',
+        'Line',
+        'Direction',
+        'Game',
+        'Status',
+        'Live',
+    ]
+
+    combined_rows = []
+
+    for _, group in df.groupby(
+        group_cols,
+        dropna=False,
+        sort=False,
+    ):
+        bet_ids = sorted(
+            {
+                int(x)
+                for x in group['Bet ID'].tolist()
+            }
+        )
+
+        sportsbooks = sorted(
+            {
+                str(x)
+                for x in group['Sportsbook'].tolist()
+                if str(x).strip()
+            }
+        )
+
+        descriptions = []
+        for value in group['Bet'].tolist():
+            value = str(value or '').strip()
+            if value and value not in descriptions:
+                descriptions.append(value)
+
+        first = group.iloc[0].to_dict()
+
+        first['Count'] = len(group)
+        first['Bet IDs'] = ', '.join(
+            str(x)
+            for x in bet_ids
+        )
+        first['Sportsbook'] = ', '.join(
+            sportsbooks
+        )
+        first['Bet'] = ' | '.join(
+            descriptions
+        )
+
+        combined_rows.append(
+            first
+        )
+
+    combined_df = pd.DataFrame(
+        combined_rows
+    )
+
     # Keep the most useful columns visible first.
     visible = [
-        'Bet ID',
+        'Count',
         'Sportsbook',
         'Sport',
         'Selection',
@@ -1552,18 +1615,20 @@ def _render_active_legs_tab():
         'Game',
         'Status',
         'Live',
+        'Bet IDs',
         'Bet',
     ]
 
     st.dataframe(
-        df[visible],
+        combined_df[visible],
         use_container_width=True,
         hide_index=True,
         column_config={
-            'Bet ID': st.column_config.NumberColumn(
-                'Bet',
+            'Count': st.column_config.NumberColumn(
+                'Count',
                 format='%d',
                 width='small',
+                help='Number of active bets containing this same leg.',
             ),
             'Sportsbook': st.column_config.TextColumn(
                 'Sportsbook',
@@ -1602,6 +1667,10 @@ def _render_active_legs_tab():
                 'Live',
                 width='medium',
             ),
+            'Bet IDs': st.column_config.TextColumn(
+                'Bets',
+                width='small',
+            ),
             'Bet': st.column_config.TextColumn(
                 'Bet Description',
                 width='large',
@@ -1610,7 +1679,8 @@ def _render_active_legs_tab():
     )
 
     st.caption(
-        f"{len(rows)} active leg(s) across "
+        f"{len(rows)} active leg occurrence(s) combined into "
+        f"{len(combined_df)} unique leg(s) across "
         f"{df['Bet ID'].nunique()} bet(s)."
     )
 
