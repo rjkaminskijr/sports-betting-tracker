@@ -142,7 +142,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 21.0 • Active Legs tab + login + expandable Supabase tracking')
+st.caption('Version 22.0 • Active Legs fix + login + expandable Supabase tracking')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -1502,7 +1502,7 @@ def _active_leg_rows_excluding_futures():
             if leg_status in SETTLED_STATUSES:
                 continue
 
-            game = _game_description(
+            game = _leg_game_detail(
                 leg
             )
 
