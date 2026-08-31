@@ -18,6 +18,7 @@ from services.espn_season import canonical_market, future_progress
 from services.supabase_api import (
     refresh_all_active_bets,
     recheck_leg,
+    recalculate_parent_from_manual_leg,
     list_round_robin_combinations,
 )
 
@@ -25,7 +26,7 @@ st.set_page_config(page_title='Sports Bet Tracker', page_icon='🎟️', layout=
 init_db()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 14.0 • Supabase-backed tracking + Round Robin combination details')
+st.caption('Version 15.0 • Round Robin details + manual VOID settlement')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -777,7 +778,7 @@ with tab_history:
                     st.error(f'Recheck failed: {e}')
 
         st.markdown('#### Manual VOID override')
-        st.caption('Use this when the sportsbook explicitly voids a leg. Parent/parlay settlement will be recalculated on the next Refresh Bets or manual recheck.')
+        st.caption('Use this only when the sportsbook explicitly voids a leg. The leg and parent are recalculated immediately without asking ESPN to regrade the manual VOID.')
         bet_options={
             f"Bet {b['id']} • {b.get('sportsbook') or ''} • {b.get('headline') or b.get('sportsbook_bet_id') or ''}":b
             for b in rows
@@ -794,11 +795,24 @@ with tab_history:
             void_leg=leg_options[void_leg_label]
             if st.button('Mark selected leg VOID'):
                 try:
-                    update_leg_manual_status(void_leg['id'],'VOID')
-                    # Direct recheck would overwrite a sportsbook-specific VOID
-                    # from ESPN, so we intentionally leave the manual override as-is.
-                    st.success('Leg marked VOID. Parent settlement will honor the manual status.')
+                    with st.spinner('Applying VOID and recalculating parent...'):
+                        update_leg_manual_status(void_leg['id'], 'VOID')
+                        settlement = recalculate_parent_from_manual_leg(
+                            void_leg['id']
+                        )
+
+                    if not settlement or not settlement.get('ok'):
+                        raise RuntimeError(
+                            (settlement or {}).get('error')
+                            or 'Settlement recalculation did not succeed.'
+                        )
+
+                    st.success(
+                        'Leg marked VOID and parent settlement recalculated '
+                        'without ESPN regrading the leg.'
+                    )
                     st.rerun()
+
                 except Exception as e:
                     st.error(f'VOID update failed: {e}')
     else:
