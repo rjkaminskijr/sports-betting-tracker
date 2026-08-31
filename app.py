@@ -8,25 +8,24 @@ from database.db import (
     list_bets,
     list_legs,
     update_bet_espn_scope,
-    update_leg_future_settings,
-    update_leg_future_live,
-    update_leg_line_direction,
     update_leg_manual_status,
-    future_legs,
 )
-from services.espn_season import canonical_market, future_progress
 from services.supabase_api import (
     refresh_all_active_bets,
     recheck_leg,
     recalculate_parent_from_manual_leg,
     list_round_robin_combinations,
+    list_future_candidates,
+    list_future_legs,
+    configure_future_leg,
+    refresh_all_future_legs,
 )
 
 st.set_page_config(page_title='Sports Bet Tracker', page_icon='🎟️', layout='wide')
 init_db()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 15.0 • Round Robin details + manual VOID settlement')
+st.caption('Version 16.0 • Supabase-backed season futures + manual VOID settlement')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -660,66 +659,208 @@ with tab_active:
 
 with tab_futures:
     st.subheader('NFL Season Futures')
-    st.caption('Track cumulative regular-season player props separately from single-game bets. ESPN season type 2 = Regular Season.')
-    st.info('Season-future tracking supports Passing Yards, Passing TDs, Interceptions, Rushing Yards, Rushing TDs, Receiving Yards, Receptions, and Receiving TDs.')
+    st.caption(
+        'Season-future tracking is fully Supabase-backed. '
+        'Player matching and season-stat refreshes run through the same '
+        'Supabase Edge Functions used by the rest of the tracker.'
+    )
+    st.info(
+        'Supported markets: Passing Yards, Passing TDs, Interceptions, '
+        'Rushing Yards, Rushing TDs, Receiving Yards, Receptions, and '
+        'Receiving TDs. Regular-season tracking uses ESPN season type 2.'
+    )
 
-    # Let any imported NFL player leg be promoted to a season future without re-importing the bet.
-    eligible=[]
-    for b in list_bets():
-        if (b.get('sport') or '').upper()!='NFL':
-            continue
-        for lg in list_legs(b['id']):
-            if canonical_market(lg.get('market')):
-                eligible.append((b,lg))
+    # ----------------------------------------------------------
+    # Configure an imported NFL player prop as a season future.
+    # ----------------------------------------------------------
+    eligible = list_future_candidates()
+
     if eligible:
         st.markdown('#### Add / configure season futures')
-        options={f"Bet {b['id']} • {lg.get('selection')} • {lg.get('market')} • line {lg.get('line_value') or '—'}":(b,lg) for b,lg in eligible}
-        chosen=st.selectbox('Choose an imported player leg', list(options.keys()))
-        b,lg=options[chosen]
-        c1,c2,c3=st.columns(3)
-        yr=c1.number_input('Season',min_value=2020,max_value=2100,value=int(lg.get('future_season_year') or 2026),step=1,key='futureyear')
-        direction=c2.selectbox('Direction',['OVER','UNDER'],index=0 if str(lg.get('direction') or 'OVER').upper()!='UNDER' else 1,key='futuredir')
-        line_default=0.0
-        try:
-            import re as _re
-            _m=_re.search(r'\d+(?:\.\d+)?',str(lg.get('line_value') or ''))
-            if _m: line_default=float(_m.group())
-        except Exception: pass
-        line=c3.number_input('Line',min_value=0.0,value=line_default,step=0.5,key='futureline')
-        if st.button('Track this leg as season future'):
-            # Preserve the user's normalized line/direction directly on the Supabase leg.
-            update_leg_line_direction(lg['id'], line, direction)
-            update_leg_future_settings(lg['id'],'SEASON',int(yr),2)
-            st.success('Season-future tracking enabled for this leg.')
-            st.rerun()
-    else:
-        st.caption('No imported NFL player markets are eligible yet. Import a season-long player prop first.')
 
-    tracked=future_legs()
+        options = {
+            (
+                f"Bet {lg.get('bet_row_id')} • "
+                f"{lg.get('selection')} • "
+                f"{lg.get('market')} • "
+                f"line {lg.get('line_value') if lg.get('line_value') is not None else '—'}"
+            ): lg
+            for lg in eligible
+        }
+
+        chosen = st.selectbox(
+            'Choose an imported player leg',
+            list(options.keys()),
+        )
+
+        lg = options[chosen]
+
+        c1, c2, c3 = st.columns(3)
+
+        yr = c1.number_input(
+            'Season',
+            min_value=2020,
+            max_value=2100,
+            value=int(
+                lg.get('future_season_year')
+                or lg.get('espn_season_year')
+                or 2026
+            ),
+            step=1,
+            key='futureyear',
+        )
+
+        direction = c2.selectbox(
+            'Direction',
+            ['OVER', 'UNDER'],
+            index=(
+                1
+                if str(lg.get('direction') or 'OVER').upper() == 'UNDER'
+                else 0
+            ),
+            key='futuredir',
+        )
+
+        line_default = _safe_float(lg.get('line_value'))
+        if line_default is None:
+            line_default = 0.0
+
+        line = c3.number_input(
+            'Line',
+            min_value=0.0,
+            value=float(line_default),
+            step=0.5,
+            key='futureline',
+        )
+
+        if st.button('Track this leg as season future'):
+            try:
+                configure_future_leg(
+                    lg['id'],
+                    line,
+                    direction,
+                    int(yr),
+                    2,
+                )
+                st.success(
+                    'Season-future tracking enabled in Supabase.'
+                )
+                st.rerun()
+
+            except Exception as exc:
+                st.error(
+                    f'Could not configure season future: {exc}'
+                )
+
+    else:
+        st.caption(
+            'No imported NFL player markets are eligible yet. '
+            'Import a supported season-long player prop first.'
+        )
+
+    # ----------------------------------------------------------
+    # Read and refresh tracked futures only from Supabase.
+    # ----------------------------------------------------------
+    tracked = list_future_legs()
+
     if tracked:
         st.markdown('#### Tracked season futures')
-        if st.button('Refresh Season Stats',type='primary'):
-            refreshed=[]
-            for lg in tracked:
-                try:
-                    import re as _re
-                    m=_re.search(r'\d+(?:\.\d+)?',str(lg.get('line_value') or ''))
-                    line=float(m.group()) if m else None
-                    prog=future_progress(lg.get('selection'),lg.get('market'),line,lg.get('direction') or 'OVER',int(lg.get('future_season_year') or 2026),int(lg.get('future_season_type') or 2),lg.get('espn_athlete_id'))
-                    update_leg_future_live(lg['id'],prog.get('athlete_id'),prog.get('state'),prog.get('current'),prog.get('games_played'),prog.get('pace'),datetime.now().isoformat(timespec='seconds'))
-                    refreshed.append((lg,prog))
-                except Exception as e:
-                    refreshed.append((lg,{'state':f'ERROR: {e}'}))
-            st.session_state['future_refresh']=refreshed
-            st.rerun()
-        # Reload after possible refresh so persisted values display consistently.
-        tracked=future_legs()
-        rows=[]
+
+        if st.button(
+            'Refresh Season Stats',
+            type='primary',
+        ):
+            try:
+                with st.spinner(
+                    'Refreshing season futures through Supabase...'
+                ):
+                    future_result = refresh_all_future_legs()
+
+                st.session_state['future_refresh'] = future_result
+
+                if future_result.get('failed', 0):
+                    st.warning(
+                        f"Season refresh finished with "
+                        f"{future_result.get('successful', 0)} successful "
+                        f"and {future_result.get('failed', 0)} failed."
+                    )
+                else:
+                    st.success(
+                        f"Refreshed "
+                        f"{future_result.get('successful', 0)} "
+                        f"season-future leg(s)."
+                    )
+
+                st.rerun()
+
+            except Exception as exc:
+                st.error(
+                    f'Season refresh failed: {exc}'
+                )
+
+        tracked = list_future_legs()
+
+        rows = []
+
         for lg in tracked:
-            cur=lg.get('future_current'); line=lg.get('line_value'); gp=lg.get('future_games_played'); pace=lg.get('future_pace')
-            rows.append({'Player':lg.get('selection'),'Market':lg.get('market'),'Line':line,'Current':cur,'Games':gp,'Pace':round(float(pace),1) if pace is not None else None,'State':lg.get('future_state') or 'NOT REFRESHED','Season':lg.get('future_season_year') or 2026})
-        st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
-        st.caption('Pace = current stat ÷ games played × 17. Official sportsbook settlement rules still control voids, injuries, pushes, and special minimum-game conditions.')
+            cur = _safe_float(
+                lg.get('future_current')
+            )
+
+            line = _safe_float(
+                lg.get('line_value')
+            )
+
+            gp = lg.get(
+                'future_games_played'
+            )
+
+            pace = _safe_float(
+                lg.get('future_pace')
+            )
+
+            rows.append({
+                'Bet': lg.get('bet_row_id'),
+                'Player': lg.get('selection'),
+                'Market': lg.get('market'),
+                'Direction': lg.get('direction'),
+                'Line': line,
+                'Current': cur,
+                'Games': gp,
+                'Pace': (
+                    round(pace, 1)
+                    if pace is not None
+                    else None
+                ),
+                'State': (
+                    lg.get('future_state')
+                    or 'NOT REFRESHED'
+                ),
+                'Season': (
+                    lg.get('future_season_year')
+                    or lg.get('espn_season_year')
+                    or 2026
+                ),
+                'ESPN Athlete ID': lg.get('espn_athlete_id'),
+                'Last Updated': lg.get('future_updated_at'),
+            })
+
+        st.dataframe(
+            pd.DataFrame(rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.caption(
+            'Pace = current stat ÷ games played × 17. '
+            'Official sportsbook settlement rules still control voids, '
+            'injuries, pushes, and special minimum-game conditions.'
+        )
+
+    else:
+        st.caption(
+            'No season futures are currently being tracked.'
+        )
 
 with tab_history:
     st.subheader('Bet History')
