@@ -25,7 +25,7 @@ st.set_page_config(page_title='Sports Bet Tracker', page_icon='🎟️', layout=
 init_db()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 16.0 • Supabase-backed season futures + manual VOID settlement')
+st.caption('Version 17.0 • Performance dashboard + Supabase-backed tracking')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -471,16 +471,551 @@ def _render_selectable_bet_table(bets, key):
     return selected_bet, leg_map
 
 
+
+def _dashboard_status(bet):
+    return str(bet.get('status') or 'PENDING').strip().upper()
+
+
+def _dashboard_returned(bet):
+    status = _dashboard_status(bet)
+    stake = _safe_float(bet.get('stake')) or 0.0
+    paid = _safe_float(bet.get('paid'))
+
+    if status in SETTLED_STATUSES:
+        if paid is not None:
+            return paid
+        if status in {'PUSH', 'VOID', 'VOIDED', 'CANCELLED', 'CANCELED'}:
+            return stake
+        return 0.0
+
+    return 0.0
+
+
+def _dashboard_bet_type(bet):
+    bet_type = str(bet.get('bet_type') or '').strip().upper()
+
+    if (
+        bet.get('round_robin_size') is not None
+        or bet.get('round_robin_combinations') is not None
+        or bet_type == 'ROUND_ROBIN'
+    ):
+        return 'Round Robin'
+
+    aliases = {
+        'STRAIGHT': 'Straight',
+        'SINGLE': 'Straight',
+        'PARLAY': 'Parlay',
+        'SGP': 'SGP',
+        'SGPX': 'SGPx',
+        'TEASER': 'Teaser',
+    }
+
+    return aliases.get(
+        bet_type,
+        bet_type.title() if bet_type else 'Other',
+    )
+
+
+def _dashboard_sport(bet):
+    value = str(bet.get('sport') or '').strip().upper()
+    aliases = {
+        'NCAAF': 'CFB',
+        'COLLEGE FOOTBALL': 'CFB',
+    }
+    return aliases.get(value, value or 'Unknown')
+
+
+def _dashboard_date(bet):
+    value = bet.get('placed_at') or bet.get('source_captured_at')
+    if not value:
+        return None
+
+    try:
+        return pd.to_datetime(value, utc=True, errors='coerce')
+    except Exception:
+        return None
+
+
+def _dashboard_bet_rows(all_bets):
+    rows = []
+
+    for bet in all_bets:
+        status = _dashboard_status(bet)
+        stake = _safe_float(bet.get('stake')) or 0.0
+        returned = _dashboard_returned(bet)
+        pnl = _profit_loss(bet)
+        to_pay = _safe_float(bet.get('to_pay')) or 0.0
+
+        rows.append({
+            'Bet ID': bet.get('id'),
+            'Sportsbook': bet.get('sportsbook') or 'Unknown',
+            'Bet Type': _dashboard_bet_type(bet),
+            'Sport': _dashboard_sport(bet),
+            'Status': status,
+            'Wagered': stake,
+            'Returned': returned,
+            'P/L': pnl if pnl is not None else 0.0,
+            'Potential Return': to_pay,
+            'Placed': _dashboard_date(bet),
+            'Is Active': _is_active_status(status),
+            'Is Settled': status in SETTLED_STATUSES,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def _summary_breakdown(df, group_col):
+    if df.empty:
+        return pd.DataFrame()
+
+    grouped = (
+        df.groupby(group_col, dropna=False)
+        .agg(
+            Bets=('Bet ID', 'count'),
+            Wagered=('Wagered', 'sum'),
+            Returned=('Returned', 'sum'),
+            P_L=('P/L', 'sum'),
+            Wins=('Status', lambda s: int((s == 'WON').sum())),
+            Losses=('Status', lambda s: int((s == 'LOST').sum())),
+            Active=('Is Active', 'sum'),
+        )
+        .reset_index()
+    )
+
+    grouped['ROI %'] = grouped.apply(
+        lambda r: (
+            (r['P_L'] / r['Wagered']) * 100.0
+            if r['Wagered']
+            else 0.0
+        ),
+        axis=1,
+    )
+
+    grouped = grouped.rename(columns={'P_L': 'P/L'})
+    return grouped.sort_values('P/L', ascending=False)
+
+
+def _render_summary_dataframe(df, group_col):
+    if df.empty:
+        st.caption('No data yet.')
+        return
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            group_col: st.column_config.TextColumn(group_col),
+            'Bets': st.column_config.NumberColumn('Bets', format='%d'),
+            'Wagered': st.column_config.NumberColumn('Wagered', format='$%.2f'),
+            'Returned': st.column_config.NumberColumn('Returned', format='$%.2f'),
+            'P/L': st.column_config.NumberColumn('P/L', format='$%.2f'),
+            'ROI %': st.column_config.NumberColumn('ROI %', format='%.1f%%'),
+            'Wins': st.column_config.NumberColumn('Wins', format='%d'),
+            'Losses': st.column_config.NumberColumn('Losses', format='%d'),
+            'Active': st.column_config.NumberColumn('Active', format='%d'),
+        },
+    )
+
+
+def _dashboard_leg_exposure(all_bets):
+    active_bets = [
+        bet
+        for bet in all_bets
+        if _is_active_status(bet.get('status'))
+    ]
+
+    player_rows = []
+    team_rows = []
+    active_leg_count = 0
+    winning_legs = 0
+    losing_legs = 0
+    pending_legs = 0
+
+    for bet in active_bets:
+        stake = _safe_float(bet.get('stake')) or 0.0
+        potential = _safe_float(bet.get('to_pay')) or 0.0
+        legs = list_legs(bet['id'])
+
+        for leg in legs:
+            active_leg_count += 1
+            leg_status = str(leg.get('status') or 'PENDING').upper()
+
+            if leg_status == 'WON':
+                winning_legs += 1
+            elif leg_status == 'LOST':
+                losing_legs += 1
+            else:
+                pending_legs += 1
+
+            player = str(leg.get('selection') or '').strip()
+            market = str(leg.get('market') or '').strip()
+
+            is_player = bool(
+                leg.get('espn_athlete_id')
+                or any(
+                    token in market.lower()
+                    for token in [
+                        'td scorer',
+                        'receiving',
+                        'rushing',
+                        'passing',
+                        'receptions',
+                    ]
+                )
+            )
+
+            if player and is_player:
+                player_rows.append({
+                    'Player': player,
+                    'Bet ID': bet.get('id'),
+                    'Wager Exposure': stake,
+                    'Potential Return': potential,
+                })
+
+            teams = []
+            for value in [
+                leg.get('event_team_a'),
+                leg.get('event_team_b'),
+            ]:
+                value = str(value or '').strip()
+                if value and value not in teams:
+                    teams.append(value)
+
+            for team in teams:
+                team_rows.append({
+                    'Team': team,
+                    'Bet ID': bet.get('id'),
+                    'Wager Exposure': stake,
+                    'Potential Return': potential,
+                })
+
+    def summarize(rows, label):
+        if not rows:
+            return pd.DataFrame()
+
+        frame = pd.DataFrame(rows)
+
+        return (
+            frame.groupby(label)
+            .agg(
+                Bets=('Bet ID', 'nunique'),
+                Wager_Exposure=('Wager Exposure', 'sum'),
+                Potential_Return=('Potential Return', 'sum'),
+            )
+            .reset_index()
+            .rename(columns={
+                'Wager_Exposure': 'Wager Exposure',
+                'Potential_Return': 'Potential Return',
+            })
+            .sort_values(
+                ['Wager Exposure', 'Potential Return'],
+                ascending=False,
+            )
+        )
+
+    return {
+        'active_leg_count': active_leg_count,
+        'winning_legs': winning_legs,
+        'losing_legs': losing_legs,
+        'pending_legs': pending_legs,
+        'players': summarize(player_rows, 'Player'),
+        'teams': summarize(team_rows, 'Team'),
+    }
+
+
+def _round_robin_dashboard_summary(all_bets):
+    rr_bets = [
+        bet
+        for bet in all_bets
+        if _dashboard_bet_type(bet) == 'Round Robin'
+    ]
+
+    if not rr_bets:
+        return {
+            'bets': 0,
+            'wagered': 0.0,
+            'returned': 0.0,
+            'pnl': 0.0,
+            'won': 0,
+            'lost': 0,
+            'pending': 0,
+        }
+
+    wagered = sum(_safe_float(bet.get('stake')) or 0.0 for bet in rr_bets)
+    returned = sum(_dashboard_returned(bet) for bet in rr_bets)
+    pnl = sum((_profit_loss(bet) or 0.0) for bet in rr_bets)
+
+    won = 0
+    lost = 0
+    pending = 0
+
+    for bet in rr_bets:
+        try:
+            combos = list_round_robin_combinations(bet['id'])
+        except Exception:
+            combos = []
+
+        for combo in combos:
+            status = str(combo.get('status') or 'PENDING').upper()
+            if status == 'WON':
+                won += 1
+            elif status == 'LOST':
+                lost += 1
+            else:
+                pending += 1
+
+    return {
+        'bets': len(rr_bets),
+        'wagered': wagered,
+        'returned': returned,
+        'pnl': pnl,
+        'won': won,
+        'lost': lost,
+        'pending': pending,
+    }
+
+
+def _render_dashboard(all_bets):
+    bet_df = _dashboard_bet_rows(all_bets)
+
+    if bet_df.empty:
+        st.info('No bets have been imported yet.')
+        return
+
+    settled_df = bet_df[bet_df['Is Settled']]
+    active_df = bet_df[bet_df['Is Active']]
+
+    total_wagered = float(bet_df['Wagered'].sum())
+    total_returned = float(settled_df['Returned'].sum())
+    settled_wagered = float(settled_df['Wagered'].sum())
+    net_pnl = float(settled_df['P/L'].sum())
+    roi = (
+        (net_pnl / settled_wagered) * 100.0
+        if settled_wagered
+        else 0.0
+    )
+    open_exposure = float(active_df['Wagered'].sum())
+    active_potential = float(active_df['Potential Return'].sum())
+
+    wins = int((settled_df['Status'] == 'WON').sum())
+    losses = int((settled_df['Status'] == 'LOST').sum())
+    pushes = int(
+        settled_df['Status'].isin(
+            ['PUSH', 'VOID', 'VOIDED', 'CANCELLED', 'CANCELED']
+        ).sum()
+    )
+
+    st.subheader('Performance Overview')
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric('Total Wagered', _money(total_wagered))
+    c2.metric('Total Returned', _money(total_returned))
+    c3.metric('Net P/L', _money(net_pnl))
+    c4.metric('ROI', f'{roi:.1f}%')
+    c5.metric('Open Exposure', _money(open_exposure))
+    c6.metric('Active Bets', len(active_df))
+
+    st.caption(
+        f"Settled record: {wins}-{losses}"
+        + (f"-{pushes} push/void" if pushes else "")
+        + f" • Active potential return: {_money(active_potential)}"
+    )
+
+    exposure = _dashboard_leg_exposure(all_bets)
+
+    st.markdown('#### Active Exposure')
+    e1, e2, e3, e4, e5 = st.columns(5)
+    e1.metric('At Risk', _money(open_exposure))
+    e2.metric('Potential Return', _money(active_potential))
+    e3.metric('Active Legs', exposure['active_leg_count'])
+    e4.metric(
+        'Won / Lost Legs',
+        f"{exposure['winning_legs']} / {exposure['losing_legs']}",
+    )
+    e5.metric('Pending Legs', exposure['pending_legs'])
+
+    st.markdown('#### Performance Breakdowns')
+    b1, b2, b3 = st.columns(3)
+
+    with b1:
+        st.markdown('**By Sportsbook**')
+        _render_summary_dataframe(
+            _summary_breakdown(bet_df, 'Sportsbook'),
+            'Sportsbook',
+        )
+
+    with b2:
+        st.markdown('**By Bet Type**')
+        _render_summary_dataframe(
+            _summary_breakdown(bet_df, 'Bet Type'),
+            'Bet Type',
+        )
+
+    with b3:
+        st.markdown('**By Sport**')
+        _render_summary_dataframe(
+            _summary_breakdown(bet_df, 'Sport'),
+            'Sport',
+        )
+
+    st.markdown('#### Recent Performance')
+
+    dated = settled_df.dropna(subset=['Placed']).copy()
+
+    if dated.empty:
+        st.caption('No dated settled bets are available for a P/L trend yet.')
+    else:
+        dated['Day'] = dated['Placed'].dt.tz_convert(None).dt.date
+        daily = (
+            dated.groupby('Day')
+            .agg(
+                Wagered=('Wagered', 'sum'),
+                Daily_P_L=('P/L', 'sum'),
+            )
+            .reset_index()
+            .rename(columns={'Daily_P_L': 'Daily P/L'})
+            .sort_values('Day')
+        )
+        daily['Cumulative P/L'] = daily['Daily P/L'].cumsum()
+
+        chart_df = daily.set_index('Day')[['Daily P/L', 'Cumulative P/L']]
+        st.line_chart(chart_df, use_container_width=True)
+
+        st.dataframe(
+            daily.tail(14),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                'Day': st.column_config.DateColumn('Day'),
+                'Wagered': st.column_config.NumberColumn(
+                    'Wagered',
+                    format='$%.2f',
+                ),
+                'Daily P/L': st.column_config.NumberColumn(
+                    'Daily P/L',
+                    format='$%.2f',
+                ),
+                'Cumulative P/L': st.column_config.NumberColumn(
+                    'Cumulative P/L',
+                    format='$%.2f',
+                ),
+            },
+        )
+
+    st.markdown('#### Exposure Concentration')
+    x1, x2 = st.columns(2)
+
+    with x1:
+        st.markdown('**Top Players**')
+        players = exposure['players'].head(10)
+        if players.empty:
+            st.caption('No active player exposure.')
+        else:
+            st.dataframe(
+                players,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Bets': st.column_config.NumberColumn('Bets', format='%d'),
+                    'Wager Exposure': st.column_config.NumberColumn(
+                        'Wager Exposure',
+                        format='$%.2f',
+                    ),
+                    'Potential Return': st.column_config.NumberColumn(
+                        'Potential Return',
+                        format='$%.2f',
+                    ),
+                },
+            )
+
+    with x2:
+        st.markdown('**Top Teams**')
+        teams = exposure['teams'].head(10)
+        if teams.empty:
+            st.caption('No active team exposure.')
+        else:
+            st.dataframe(
+                teams,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Bets': st.column_config.NumberColumn('Bets', format='%d'),
+                    'Wager Exposure': st.column_config.NumberColumn(
+                        'Wager Exposure',
+                        format='$%.2f',
+                    ),
+                    'Potential Return': st.column_config.NumberColumn(
+                        'Potential Return',
+                        format='$%.2f',
+                    ),
+                },
+            )
+
+    st.markdown('#### Highlights')
+
+    settled_with_pnl = settled_df.copy()
+    h1, h2, h3 = st.columns(3)
+
+    with h1:
+        if settled_with_pnl.empty:
+            st.metric('Biggest Win', '—')
+        else:
+            win_rows = settled_with_pnl[settled_with_pnl['P/L'] > 0]
+            if win_rows.empty:
+                st.metric('Biggest Win', '—')
+            else:
+                row = win_rows.loc[win_rows['P/L'].idxmax()]
+                st.metric(
+                    'Biggest Win',
+                    _money(row['P/L']),
+                    help=f"Bet {int(row['Bet ID'])} • {row['Sportsbook']}",
+                )
+
+    with h2:
+        if settled_with_pnl.empty:
+            st.metric('Biggest Loss', '—')
+        else:
+            loss_rows = settled_with_pnl[settled_with_pnl['P/L'] < 0]
+            if loss_rows.empty:
+                st.metric('Biggest Loss', '—')
+            else:
+                row = loss_rows.loc[loss_rows['P/L'].idxmin()]
+                st.metric(
+                    'Biggest Loss',
+                    _money(row['P/L']),
+                    help=f"Bet {int(row['Bet ID'])} • {row['Sportsbook']}",
+                )
+
+    with h3:
+        if active_df.empty:
+            st.metric('Largest Open Return', '—')
+        else:
+            row = active_df.loc[active_df['Potential Return'].idxmax()]
+            st.metric(
+                'Largest Open Return',
+                _money(row['Potential Return']),
+                help=f"Bet {int(row['Bet ID'])} • {row['Sportsbook']}",
+            )
+
+    rr = _round_robin_dashboard_summary(all_bets)
+
+    if rr['bets']:
+        st.markdown('#### Round Robin Summary')
+        r1, r2, r3, r4, r5 = st.columns(5)
+        r1.metric('RR Bets', rr['bets'])
+        r2.metric('RR Wagered', _money(rr['wagered']))
+        r3.metric('RR Returned', _money(rr['returned']))
+        r4.metric('RR P/L', _money(rr['pnl']))
+        r5.metric(
+            'Combos W/L/P',
+            f"{rr['won']}/{rr['lost']}/{rr['pending']}",
+        )
+
 tab_dash, tab_active, tab_futures, tab_history = st.tabs(['Dashboard','Active Bets','Season Futures','History'])
 
 with tab_dash:
-    all_bets=list_bets(); open_bets=[b for b in all_bets if _is_active_status(b.get('status'))]
-    c1,c2,c3,c4=st.columns(4)
-    c1.metric('Active Bets',len(open_bets)); c2.metric('Total Bets',len(all_bets))
-    total_stake=sum(float(b.get('stake') or 0) for b in all_bets); c3.metric('Total Wagered',_money(total_stake))
-    pnl=sum((float(b.get('paid') or 0)-float(b.get('stake') or 0)) if b.get('status')=='WON' else (-float(b.get('stake') or 0) if b.get('status')=='LOST' else 0) for b in all_bets)
-    c4.metric('Settled P/L',_money(pnl))
-    st.info('Bets are imported through the iPhone/iPad Shortcut into Supabase. This app is now the tracking, refresh, futures, and history interface.')
+    _render_dashboard(list_bets())
 
 
 
