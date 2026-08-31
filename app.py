@@ -21,7 +21,7 @@ st.set_page_config(page_title='Sports Bet Tracker', page_icon='🎟️', layout=
 init_db()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 9.0 • Supabase-backed bet tracking + on-demand live refresh')
+st.caption('Version 10.0 • Supabase-backed bet tracking + expandable bet tables')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -29,6 +29,282 @@ def _odds(v): return '' if v is None else f'{int(v):+d}'
 ACTIVE_STATUSES={'PENDING','OPEN','LIVE','IN_PROGRESS'}
 SETTLED_STATUSES={'WON','LOST','PUSH','VOID','VOIDED','CANCELLED','CANCELED','CASHED_OUT'}
 def _is_active_status(v): return str(v or '').upper() in ACTIVE_STATUSES
+
+
+def _safe_float(value):
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _display_sport(bet, legs):
+    sport = str(bet.get('sport') or '').strip()
+    if sport:
+        upper = sport.upper()
+        aliases = {
+            'NCAAF': 'College Football',
+            'CFB': 'College Football',
+            'COLLEGE FOOTBALL': 'College Football',
+        }
+        return aliases.get(upper, upper)
+
+    # match-players only assigns athlete IDs to NFL props, so this is
+    # a safe fallback for imported NFL player slips whose parent sport
+    # was not populated.
+    if any(lg.get('espn_athlete_id') for lg in legs):
+        return 'NFL'
+
+    return 'Football'
+
+
+def _clean_market_name(value):
+    value = str(value or '').strip()
+    if not value:
+        return 'Bet'
+
+    replacements = {
+        'First TD Scorer': 'First TD Scorer',
+        'Anytime TD Scorer': 'Anytime TD Scorer',
+        'Last TD Scorer': 'Last TD Scorer',
+        'Moneyline': 'Moneyline',
+        'Spread': 'Spread',
+        'Total': 'Total',
+    }
+    return replacements.get(value, value)
+
+
+def _bet_description(bet, legs):
+    sport = _display_sport(bet, legs)
+
+    markets = [
+        _clean_market_name(lg.get('market'))
+        for lg in legs
+        if str(lg.get('market') or '').strip()
+    ]
+    unique_markets = list(dict.fromkeys(markets))
+
+    rr_size = bet.get('round_robin_size')
+    rr_combos = bet.get('round_robin_combinations')
+    bet_type = str(bet.get('bet_type') or '').strip().upper()
+
+    if rr_size or rr_combos or 'ROUND ROBIN' in bet_type:
+        if len(unique_markets) == 1:
+            return f"{sport} {unique_markets[0]} Round Robin"
+        return f"{sport} Round Robin"
+
+    if len(legs) == 1:
+        market = unique_markets[0] if unique_markets else 'Straight Bet'
+        return f"{sport} {market}"
+
+    if len(unique_markets) == 1:
+        return f"{sport} {unique_markets[0]} Parlay"
+
+    if 'SGP' in bet_type or 'SAME GAME' in bet_type:
+        return f"{sport} Same Game Parlay"
+
+    if len(legs) > 1:
+        return f"{sport} {len(legs)}-Leg Parlay"
+
+    headline = str(bet.get('headline') or '').strip()
+    if headline:
+        return headline
+
+    return f"{sport} Bet"
+
+
+def _profit_loss(bet):
+    stake = _safe_float(bet.get('stake'))
+    paid = _safe_float(bet.get('paid'))
+    status = str(bet.get('status') or '').upper()
+
+    if stake is None:
+        return None
+
+    if status == 'LOST':
+        return -stake
+
+    if status in {'PUSH', 'VOID', 'VOIDED', 'CANCELLED', 'CANCELED'}:
+        return 0.0
+
+    if paid is not None and status in SETTLED_STATUSES:
+        return paid - stake
+
+    return None
+
+
+def _format_datetime(value):
+    if not value:
+        return ''
+
+    value = str(value)
+    try:
+        dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        return dt.strftime('%Y-%m-%d %I:%M %p')
+    except Exception:
+        return value
+
+
+def _build_bet_table_rows(bets):
+    table_rows = []
+    leg_map = {}
+
+    for bet in bets:
+        legs = list_legs(bet['id'])
+        leg_map[bet['id']] = legs
+
+        rr_size = bet.get('round_robin_size')
+        rr_combos = bet.get('round_robin_combinations')
+        bet_type = str(bet.get('bet_type') or '').strip()
+
+        if rr_size:
+            type_text = f"Round Robin {rr_size}s"
+            if rr_combos:
+                type_text += f" ({rr_combos})"
+        elif bet_type:
+            type_text = bet_type
+        elif len(legs) > 1:
+            type_text = 'Parlay'
+        else:
+            type_text = 'Straight'
+
+        table_rows.append({
+            'ID': bet.get('id'),
+            'Description': _bet_description(bet, legs),
+            'Sportsbook': bet.get('sportsbook') or '',
+            'Type': type_text,
+            'Legs': len(legs),
+            'Status': bet.get('status') or 'PENDING',
+            'Wager': _safe_float(bet.get('stake')),
+            'Odds': bet.get('current_odds') if bet.get('current_odds') is not None else bet.get('original_odds'),
+            'To Pay': _safe_float(bet.get('to_pay')),
+            'Paid': _safe_float(bet.get('paid')),
+            'P/L': _profit_loss(bet),
+            'Placed': _format_datetime(bet.get('placed_at')),
+        })
+
+    return table_rows, leg_map
+
+
+def _render_leg_table(legs):
+    display = []
+
+    for leg in legs:
+        display.append({
+            '#': leg.get('leg_index'),
+            'Selection': leg.get('selection'),
+            'Market': leg.get('market'),
+            'Line': leg.get('line_value'),
+            'Odds': leg.get('odds'),
+            'Live': leg.get('live_value'),
+            'Game State': leg.get('live_state') or leg.get('future_state'),
+            'Status': leg.get('status') or 'PENDING',
+        })
+
+    if display:
+        st.dataframe(
+            pd.DataFrame(display),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.caption('No legs stored for this bet.')
+
+
+def _render_bet_metadata(bet, legs):
+    description = _bet_description(bet, legs)
+    st.markdown(f"### {description}")
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric('Wager', _money(bet.get('stake')))
+    m2.metric('Odds', _odds(
+        bet.get('current_odds')
+        if bet.get('current_odds') is not None
+        else bet.get('original_odds')
+    ))
+    m3.metric('To Pay', _money(bet.get('to_pay')))
+    m4.metric('Paid', _money(bet.get('paid')))
+    m5.metric('P/L', _money(_profit_loss(bet)))
+
+    detail_rows = {
+        'Sportsbook': bet.get('sportsbook') or '',
+        'Sportsbook Bet ID': bet.get('sportsbook_bet_id') or '',
+        'Bet Type': bet.get('bet_type') or '',
+        'Status': bet.get('status') or 'PENDING',
+        'Sport': _display_sport(bet, legs),
+        'Leg Count': bet.get('leg_count') or len(legs),
+        'Placed At': _format_datetime(bet.get('placed_at')),
+        'Screenshot Captured': _format_datetime(bet.get('source_captured_at')),
+    }
+
+    if bet.get('round_robin_size'):
+        detail_rows['Round Robin Size'] = bet.get('round_robin_size')
+    if bet.get('round_robin_combinations'):
+        detail_rows['RR Combinations'] = bet.get('round_robin_combinations')
+    if bet.get('round_robin_wager_each') is not None:
+        detail_rows['Wager / Combination'] = _money(bet.get('round_robin_wager_each'))
+
+    meta_df = pd.DataFrame(
+        [{'Field': key, 'Value': value} for key, value in detail_rows.items()]
+    )
+    st.dataframe(meta_df, use_container_width=True, hide_index=True)
+
+    if bet.get('draftkings_share_url'):
+        st.markdown(f"[Open DraftKings shared slip]({bet.get('draftkings_share_url')})")
+
+    if bet.get('fanatics_share_url'):
+        st.markdown(f"[Open Fanatics shared slip]({bet.get('fanatics_share_url')})")
+
+    st.markdown('#### Legs')
+    _render_leg_table(legs)
+
+
+def _render_selectable_bet_table(bets, key):
+    table_rows, leg_map = _build_bet_table_rows(bets)
+
+    if not table_rows:
+        return None, leg_map
+
+    df = pd.DataFrame(table_rows)
+
+    event = st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        on_select='rerun',
+        selection_mode='single-row',
+        key=key,
+        column_config={
+            'ID': st.column_config.NumberColumn('ID', width='small'),
+            'Description': st.column_config.TextColumn('Description', width='large'),
+            'Sportsbook': st.column_config.TextColumn('Sportsbook', width='medium'),
+            'Type': st.column_config.TextColumn('Type', width='medium'),
+            'Legs': st.column_config.NumberColumn('Legs', width='small'),
+            'Status': st.column_config.TextColumn('Status', width='small'),
+            'Wager': st.column_config.NumberColumn('Wager', format='$%.2f'),
+            'Odds': st.column_config.NumberColumn('Odds', format='%+d'),
+            'To Pay': st.column_config.NumberColumn('To Pay', format='$%.2f'),
+            'Paid': st.column_config.NumberColumn('Paid', format='$%.2f'),
+            'P/L': st.column_config.NumberColumn('P/L', format='$%.2f'),
+            'Placed': st.column_config.TextColumn('Placed', width='medium'),
+        },
+    )
+
+    selected_rows = list(event.selection.rows) if event and event.selection else []
+
+    if not selected_rows:
+        return None, leg_map
+
+    selected_index = selected_rows[0]
+    selected_id = int(df.iloc[selected_index]['ID'])
+
+    selected_bet = next(
+        (bet for bet in bets if int(bet['id']) == selected_id),
+        None,
+    )
+
+    return selected_bet, leg_map
+
 
 tab_dash, tab_active, tab_futures, tab_history = st.tabs(['Dashboard','Active Bets','Season Futures','History'])
 
@@ -45,35 +321,48 @@ with tab_dash:
 
 with tab_active:
     st.subheader('Active Bets')
-    rows=list_bets('OPEN')
+    rows = list_bets('OPEN')
 
-    top1,top2=st.columns([1.2,4.8])
-    do_refresh=top1.button('↻ Refresh Bets',type='primary',disabled=(len(rows)==0))
-    top2.caption('Refreshes only active/open bets through Supabase. Settled bets are skipped automatically.')
+    top1, top2 = st.columns([1.2, 4.8])
+    do_refresh = top1.button(
+        '↻ Refresh Bets',
+        type='primary',
+        disabled=(len(rows) == 0),
+    )
+    top2.caption(
+        'Refreshes only active/open bets through Supabase. '
+        'Settled bets are skipped automatically.'
+    )
 
     if do_refresh:
         try:
             with st.spinner('Updating active bets...'):
-                refresh_result=refresh_all_active_bets(batch_size=50)
-            st.session_state['last_live_refresh']=refresh_result
-            st.session_state['last_live_refresh_at']=datetime.now().isoformat(timespec='seconds')
+                refresh_result = refresh_all_active_bets(batch_size=50)
+
+            st.session_state['last_live_refresh'] = refresh_result
+            st.session_state['last_live_refresh_at'] = datetime.now().isoformat(
+                timespec='seconds'
+            )
             st.rerun()
         except Exception as e:
             st.error(f'Live refresh failed: {e}')
 
-    last_refresh=st.session_state.get('last_live_refresh')
-    last_refresh_at=st.session_state.get('last_live_refresh_at')
+    last_refresh = st.session_state.get('last_live_refresh')
+    last_refresh_at = st.session_state.get('last_live_refresh_at')
+
     if last_refresh:
         st.success(
-            f"Updated {last_refresh.get('updated',0)} leg(s) "
-            f"across {last_refresh.get('batches',0)} batch(es). "
-            f"Skipped {last_refresh.get('skipped',0)} • Failed {last_refresh.get('failed',0)}"
+            f"Updated {last_refresh.get('updated', 0)} leg(s) "
+            f"across {last_refresh.get('batches', 0)} batch(es). "
+            f"Skipped {last_refresh.get('skipped', 0)} • "
+            f"Failed {last_refresh.get('failed', 0)}"
         )
 
         if last_refresh.get('failed', 0):
             with st.expander('Show refresh errors'):
                 failed_rows = [
-                    r for r in (last_refresh.get('results') or [])
+                    r
+                    for r in (last_refresh.get('results') or [])
                     if not r.get('ok', False)
                 ]
                 st.json(failed_rows[:10])
@@ -81,104 +370,120 @@ with tab_active:
         if last_refresh_at:
             st.caption(f'Last app refresh: {last_refresh_at}')
 
-    # Reload after a possible Edge Function refresh.
-    rows=list_bets('OPEN')
+    rows = list_bets('OPEN')
 
     if not rows:
-        st.info('No active bets. Settled bets remain in History and are not refreshed automatically.')
+        st.info(
+            'No active bets. Settled bets remain in History and are '
+            'not refreshed automatically.'
+        )
     else:
-        for bet in rows:
+        st.caption(
+            'Click a bet row to expand its legs and additional details below.'
+        )
+
+        selected_bet, leg_map = _render_selectable_bet_table(
+            rows,
+            'active_bet_table',
+        )
+
+        if selected_bet:
+            legs = leg_map.get(selected_bet['id']) or list_legs(selected_bet['id'])
+
             with st.container(border=True):
-                h1,h2,h3,h4=st.columns([4,1,1,1])
-                h1.subheader(bet.get('headline') or bet.get('sportsbook_bet_id') or 'Bet')
-                h2.metric('Wager',_money(bet.get('stake')))
-                h3.metric('Odds',_odds(bet.get('current_odds')))
-                h4.metric('To Pay',_money(bet.get('to_pay')))
+                _render_bet_metadata(selected_bet, legs)
 
-                st.caption(
-                    f"{bet.get('sportsbook_bet_id') or ''} • "
-                    f"{bet.get('sport') or 'Unknown sport'} • "
-                    f"{bet.get('placed_at') or ''}"
-                )
+                # Keep the manual ESPN schedule override available, but only
+                # show it for the selected bet instead of every active bet.
+                if _display_sport(selected_bet, legs) == 'NFL':
+                    st.markdown('#### ESPN Schedule Override')
 
-                if bet.get('draftkings_share_url'):
-                    st.markdown(f"[Open DraftKings shared slip]({bet.get('draftkings_share_url')})")
+                    scope_cols = st.columns([1.7, 1, 1, 1, 1.1])
+                    current_type = selected_bet.get('espn_season_type')
+                    scope_label = {
+                        1: 'Preseason',
+                        2: 'Regular Season',
+                        3: 'Postseason',
+                    }.get(current_type, 'Auto')
 
-                # Existing per-bet schedule overrides are still useful for any
-                # imported ticket that needs explicit season/week scoping.
-                if (bet.get('sport') or '').upper() == 'NFL':
-                    scope_cols=st.columns([1.7,1,1,1,1.1])
-                    current_type=bet.get('espn_season_type')
-                    scope_label={1:'Preseason',2:'Regular Season',3:'Postseason'}.get(current_type,'Auto')
-                    season_label=scope_cols[0].selectbox(
+                    season_label = scope_cols[0].selectbox(
                         'ESPN schedule',
-                        ['Auto','Preseason','Regular Season','Postseason'],
-                        index=['Auto','Preseason','Regular Season','Postseason'].index(scope_label),
-                        key=f"scope_{bet['id']}"
+                        ['Auto', 'Preseason', 'Regular Season', 'Postseason'],
+                        index=[
+                            'Auto',
+                            'Preseason',
+                            'Regular Season',
+                            'Postseason',
+                        ].index(scope_label),
+                        key=f"scope_{selected_bet['id']}",
                     )
-                    default_year=int(
-                        bet.get('espn_season_year')
+
+                    default_year = int(
+                        selected_bet.get('espn_season_year')
                         or (
-                            str(bet.get('placed_at') or '')[:4]
-                            if str(bet.get('placed_at') or '')[:4].isdigit()
+                            str(selected_bet.get('placed_at') or '')[:4]
+                            if str(selected_bet.get('placed_at') or '')[:4].isdigit()
                             else datetime.now().year
                         )
                     )
-                    season_year=scope_cols[1].number_input(
+
+                    season_year = scope_cols[1].number_input(
                         'Season',
                         min_value=2020,
                         max_value=2100,
                         value=default_year,
                         step=1,
-                        key=f"year_{bet['id']}"
+                        key=f"year_{selected_bet['id']}",
                     )
-                    week_value=int(bet.get('espn_week') or 1)
-                    week_num=scope_cols[2].number_input(
+
+                    week_value = int(selected_bet.get('espn_week') or 1)
+                    week_num = scope_cols[2].number_input(
                         'Week',
                         min_value=1,
                         max_value=25,
                         value=week_value,
                         step=1,
-                        key=f"week_{bet['id']}"
+                        key=f"week_{selected_bet['id']}",
                     )
-                    if scope_cols[3].button('Save', key=f"save_scope_{bet['id']}"):
-                        type_num={'Preseason':1,'Regular Season':2,'Postseason':3}.get(season_label)
-                        if season_label=='Auto':
-                            update_bet_espn_scope(bet['id'], None, None, None)
+
+                    if scope_cols[3].button(
+                        'Save',
+                        key=f"save_scope_{selected_bet['id']}",
+                    ):
+                        type_num = {
+                            'Preseason': 1,
+                            'Regular Season': 2,
+                            'Postseason': 3,
+                        }.get(season_label)
+
+                        if season_label == 'Auto':
+                            update_bet_espn_scope(
+                                selected_bet['id'],
+                                None,
+                                None,
+                                None,
+                            )
                         else:
                             update_bet_espn_scope(
-                                bet['id'],
+                                selected_bet['id'],
                                 int(season_year),
                                 type_num,
-                                int(week_num)
+                                int(week_num),
                             )
+
                         st.success('ESPN schedule setting saved.')
                         st.rerun()
-                    saved_scope='Auto' if not current_type else f"{scope_label} W{bet.get('espn_week') or '?'} {bet.get('espn_season_year') or ''}"
-                    scope_cols[4].caption(f"Saved: {saved_scope}")
 
-                legs=list_legs(bet['id'])
-                display=[]
-                for leg in legs:
-                    display.append({
-                        '#':leg.get('leg_index'),
-                        'Selection':leg.get('selection'),
-                        'Market':leg.get('market'),
-                        'Line':leg.get('line_value'),
-                        'Odds':leg.get('odds'),
-                        'Live':leg.get('live_value'),
-                        'Game State':leg.get('live_state') or leg.get('future_state'),
-                        'Status':leg.get('status') or 'PENDING',
-                    })
-
-                if display:
-                    st.dataframe(
-                        pd.DataFrame(display),
-                        use_container_width=True,
-                        hide_index=True
+                    saved_scope = (
+                        'Auto'
+                        if not current_type
+                        else (
+                            f"{scope_label} "
+                            f"W{selected_bet.get('espn_week') or '?'} "
+                            f"{selected_bet.get('espn_season_year') or ''}"
+                        )
                     )
-
-                st.write(f"**Bet status:** {bet.get('status') or 'PENDING'}")
+                    scope_cols[4].caption(f"Saved: {saved_scope}")
 
 
 with tab_futures:
@@ -245,17 +550,34 @@ with tab_futures:
         st.caption('Pace = current stat ÷ games played × 17. Official sportsbook settlement rules still control voids, injuries, pushes, and special minimum-game conditions.')
 
 with tab_history:
-    rows=list_bets()
+    st.subheader('Bet History')
+    rows = list_bets()
+
     if rows:
-        df=pd.DataFrame(rows)
-        show=['status','sportsbook_bet_id','headline','stake','current_odds','paid','to_pay','sport','placed_at']
-        existing=[c for c in show if c in df.columns]
-        st.dataframe(df[existing],use_container_width=True,hide_index=True)
+        st.caption(
+            'All bets are shown in one table. Click a row to expand the '
+            'full bet details and legs below.'
+        )
+
+        selected_bet, leg_map = _render_selectable_bet_table(
+            rows,
+            'history_bet_table',
+        )
+
+        if selected_bet:
+            legs = leg_map.get(selected_bet['id']) or list_legs(selected_bet['id'])
+
+            with st.container(border=True):
+                _render_bet_metadata(selected_bet, legs)
+
+        export_rows, _ = _build_bet_table_rows(rows)
+        export_df = pd.DataFrame(export_rows)
+
         st.download_button(
             'Export CSV',
-            df[existing].to_csv(index=False).encode(),
+            export_df.to_csv(index=False).encode(),
             'bet_history.csv',
-            'text/csv'
+            'text/csv',
         )
 
         settled=[b for b in rows if str(b.get('status') or '').upper() in SETTLED_STATUSES]
