@@ -471,6 +471,11 @@ def list_future_candidates():
             if not is_supported_season_market(leg.get("market")):
                 continue
 
+            # Already-tracked futures belong only in the tracked table below.
+            # Do not offer them again in the Add / configure dropdown.
+            if str(leg.get("tracking_scope") or "").strip().upper() == "SEASON":
+                continue
+
             row = dict(leg)
             row["bet_headline"] = bet.get("headline")
             row["bet_sport"] = bet.get("sport")
