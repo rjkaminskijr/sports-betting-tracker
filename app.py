@@ -178,7 +178,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 31.0 • Bright full-bar History colors + Exposure + Supabase tracking')
+st.caption('Version 32.0 • Historical analytics + bright History + Exposure')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -1037,6 +1037,22 @@ def _dashboard_bet_rows(all_bets):
         pnl = _profit_loss(bet)
         to_pay = _safe_float(bet.get('to_pay')) or 0.0
 
+        parent_odds = _safe_float(
+            bet.get('current_odds')
+            if bet.get('current_odds') is not None
+            else (
+                bet.get('boosted_odds')
+                if bet.get('boosted_odds') is not None
+                else bet.get('original_odds')
+            )
+        )
+
+        leg_count = bet.get('leg_count')
+        try:
+            leg_count = int(leg_count) if leg_count is not None else None
+        except (TypeError, ValueError):
+            leg_count = None
+
         rows.append({
             'Bet ID': bet.get('id'),
             'Sportsbook': bet.get('sportsbook') or 'Unknown',
@@ -1047,6 +1063,8 @@ def _dashboard_bet_rows(all_bets):
             'Returned': returned,
             'P/L': pnl if pnl is not None else 0.0,
             'Potential Return': to_pay,
+            'Odds': parent_odds,
+            'Leg Count': leg_count,
             'Placed': _dashboard_date(bet),
             'Is Active': _is_active_status(status),
             'Is Settled': status in SETTLED_STATUSES,
@@ -1367,6 +1385,305 @@ def _round_robin_dashboard_summary(all_bets):
     }
 
 
+
+def _settled_performance_summary(df, group_col):
+    if df.empty:
+        return pd.DataFrame()
+
+    grouped = (
+        df.groupby(
+            group_col,
+            dropna=False,
+        )
+        .agg(
+            Bets=('Bet ID', 'count'),
+            Wagered=('Wagered', 'sum'),
+            Returned=('Returned', 'sum'),
+            P_L=('P/L', 'sum'),
+            Wins=('Status', lambda s: int((s == 'WON').sum())),
+            Losses=('Status', lambda s: int((s == 'LOST').sum())),
+        )
+        .reset_index()
+    )
+
+    grouped['Win Rate %'] = grouped.apply(
+        lambda row: (
+            (
+                row['Wins']
+                / (row['Wins'] + row['Losses'])
+            ) * 100.0
+            if (row['Wins'] + row['Losses'])
+            else 0.0
+        ),
+        axis=1,
+    )
+
+    grouped['ROI %'] = grouped.apply(
+        lambda row: (
+            (row['P_L'] / row['Wagered']) * 100.0
+            if row['Wagered']
+            else 0.0
+        ),
+        axis=1,
+    )
+
+    grouped['Avg Wager'] = grouped.apply(
+        lambda row: (
+            row['Wagered'] / row['Bets']
+            if row['Bets']
+            else 0.0
+        ),
+        axis=1,
+    )
+
+    grouped['Avg P/L'] = grouped.apply(
+        lambda row: (
+            row['P_L'] / row['Bets']
+            if row['Bets']
+            else 0.0
+        ),
+        axis=1,
+    )
+
+    grouped = grouped.rename(
+        columns={'P_L': 'P/L'}
+    )
+
+    return grouped.sort_values(
+        ['P/L', 'ROI %'],
+        ascending=False,
+    )
+
+
+def _render_settled_analytics_table(
+    df,
+    group_col,
+):
+    if df.empty:
+        st.caption('No settled data available yet.')
+        return
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            group_col: st.column_config.TextColumn(
+                group_col
+            ),
+            'Bets': st.column_config.NumberColumn(
+                'Bets',
+                format='%d',
+            ),
+            'Wagered': st.column_config.NumberColumn(
+                'Wagered',
+                format='$%.2f',
+            ),
+            'Returned': st.column_config.NumberColumn(
+                'Returned',
+                format='$%.2f',
+            ),
+            'P/L': st.column_config.NumberColumn(
+                'P/L',
+                format='$%.2f',
+            ),
+            'Wins': st.column_config.NumberColumn(
+                'Wins',
+                format='%d',
+            ),
+            'Losses': st.column_config.NumberColumn(
+                'Losses',
+                format='%d',
+            ),
+            'Win Rate %': st.column_config.NumberColumn(
+                'Win Rate',
+                format='%.1f%%',
+            ),
+            'ROI %': st.column_config.NumberColumn(
+                'ROI',
+                format='%.1f%%',
+            ),
+            'Avg Wager': st.column_config.NumberColumn(
+                'Avg Wager',
+                format='$%.2f',
+            ),
+            'Avg P/L': st.column_config.NumberColumn(
+                'Avg P/L',
+                format='$%.2f',
+            ),
+        },
+    )
+
+
+def _odds_range(value):
+    value = _safe_float(
+        value
+    )
+
+    if value is None:
+        return 'Unknown'
+
+    if value <= -200:
+        return '≤ -200'
+    if value <= -101:
+        return '-199 to -101'
+    if value < 100:
+        return '-100 to +99'
+    if value <= 299:
+        return '+100 to +299'
+    if value <= 999:
+        return '+300 to +999'
+
+    return '+1000+'
+
+
+def _leg_count_bucket(value):
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return 'Unknown'
+
+    if count <= 1:
+        return '1 leg'
+    return f'{count} legs'
+
+
+def _render_historical_analytics(settled_df):
+    st.markdown('#### Historical Analytics')
+
+    if settled_df.empty:
+        st.caption(
+            'Historical analytics will appear after bets settle.'
+        )
+        return
+
+    graded = settled_df[
+        settled_df['Status'].isin(
+            ['WON', 'LOST']
+        )
+    ]
+
+    avg_wager = float(
+        settled_df['Wagered'].mean()
+    ) if len(settled_df) else 0.0
+
+    avg_return = float(
+        settled_df['Returned'].mean()
+    ) if len(settled_df) else 0.0
+
+    avg_pnl = float(
+        settled_df['P/L'].mean()
+    ) if len(settled_df) else 0.0
+
+    win_rate = (
+        float(
+            (graded['Status'] == 'WON').mean()
+        ) * 100.0
+        if not graded.empty
+        else 0.0
+    )
+
+    a1, a2, a3, a4 = st.columns(4)
+    a1.metric(
+        'Average Wager',
+        _money(avg_wager),
+    )
+    a2.metric(
+        'Average Return',
+        _money(avg_return),
+    )
+    a3.metric(
+        'Average P/L / Bet',
+        _money(avg_pnl),
+    )
+    a4.metric(
+        'Win Rate',
+        f'{win_rate:.1f}%',
+    )
+
+    analytics = settled_df.copy()
+
+    analytics['Odds Range'] = analytics['Odds'].apply(
+        _odds_range
+    )
+
+    analytics['Parlay Size'] = analytics['Leg Count'].apply(
+        _leg_count_bucket
+    )
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.markdown('**By Odds Range**')
+        _render_settled_analytics_table(
+            _settled_performance_summary(
+                analytics,
+                'Odds Range',
+            ),
+            'Odds Range',
+        )
+
+    with c2:
+        st.markdown('**By Leg Count**')
+        _render_settled_analytics_table(
+            _settled_performance_summary(
+                analytics,
+                'Parlay Size',
+            ),
+            'Parlay Size',
+        )
+
+    dated = analytics.dropna(
+        subset=['Placed']
+    ).copy()
+
+    if dated.empty:
+        st.caption(
+            'No dated settled bets are available for weekly/monthly summaries.'
+        )
+        return
+
+    local_dates = dated[
+        'Placed'
+    ].dt.tz_convert(None)
+
+    dated['Week'] = (
+        local_dates.dt.to_period('W-SUN')
+        .apply(
+            lambda period:
+                f"{period.start_time:%b %d} – {period.end_time:%b %d, %Y}"
+        )
+    )
+
+    dated['Month'] = local_dates.dt.strftime(
+        '%b %Y'
+    )
+
+    t1, t2 = st.columns(2)
+
+    with t1:
+        st.markdown('**By Week**')
+        weekly = _settled_performance_summary(
+            dated,
+            'Week',
+        )
+        _render_settled_analytics_table(
+            weekly,
+            'Week',
+        )
+
+    with t2:
+        st.markdown('**By Month**')
+        monthly = _settled_performance_summary(
+            dated,
+            'Month',
+        )
+        _render_settled_analytics_table(
+            monthly,
+            'Month',
+        )
+
+
 def _render_dashboard(all_bets):
     bet_df = _dashboard_bet_rows(all_bets)
 
@@ -1450,98 +1767,9 @@ def _render_dashboard(all_bets):
             'Sport',
         )
 
-    st.markdown('#### Recent Performance')
-
-    dated = settled_df.dropna(subset=['Placed']).copy()
-
-    if dated.empty:
-        st.caption('No dated settled bets are available for a P/L trend yet.')
-    else:
-        dated['Day'] = dated['Placed'].dt.tz_convert(None).dt.date
-        daily = (
-            dated.groupby('Day')
-            .agg(
-                Wagered=('Wagered', 'sum'),
-                Daily_P_L=('P/L', 'sum'),
-            )
-            .reset_index()
-            .rename(columns={'Daily_P_L': 'Daily P/L'})
-            .sort_values('Day')
-        )
-        daily['Cumulative P/L'] = daily['Daily P/L'].cumsum()
-
-        chart_df = daily.set_index('Day')[['Daily P/L', 'Cumulative P/L']]
-        st.line_chart(chart_df, use_container_width=True)
-
-        st.dataframe(
-            daily.tail(14),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                'Day': st.column_config.DateColumn('Day'),
-                'Wagered': st.column_config.NumberColumn(
-                    'Wagered',
-                    format='$%.2f',
-                ),
-                'Daily P/L': st.column_config.NumberColumn(
-                    'Daily P/L',
-                    format='$%.2f',
-                ),
-                'Cumulative P/L': st.column_config.NumberColumn(
-                    'Cumulative P/L',
-                    format='$%.2f',
-                ),
-            },
-        )
-
-    st.markdown('#### Exposure Concentration')
-    x1, x2 = st.columns(2)
-
-    with x1:
-        st.markdown('**Top Players**')
-        players = exposure['players'].head(10)
-        if players.empty:
-            st.caption('No active player exposure.')
-        else:
-            st.dataframe(
-                players,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    'Bets': st.column_config.NumberColumn('Bets', format='%d'),
-                    'Wager Exposure': st.column_config.NumberColumn(
-                        'Wager Exposure',
-                        format='$%.2f',
-                    ),
-                    'Potential Return': st.column_config.NumberColumn(
-                        'Potential Return',
-                        format='$%.2f',
-                    ),
-                },
-            )
-
-    with x2:
-        st.markdown('**Top Teams**')
-        teams = exposure['teams'].head(10)
-        if teams.empty:
-            st.caption('No active team exposure.')
-        else:
-            st.dataframe(
-                teams,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    'Bets': st.column_config.NumberColumn('Bets', format='%d'),
-                    'Wager Exposure': st.column_config.NumberColumn(
-                        'Wager Exposure',
-                        format='$%.2f',
-                    ),
-                    'Potential Return': st.column_config.NumberColumn(
-                        'Potential Return',
-                        format='$%.2f',
-                    ),
-                },
-            )
+    _render_historical_analytics(
+        settled_df
+    )
 
     st.markdown('#### Highlights')
 
