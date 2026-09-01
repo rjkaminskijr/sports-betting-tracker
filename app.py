@@ -1,5 +1,6 @@
 from datetime import datetime
 import hmac
+import math
 
 import pandas as pd
 import streamlit as st
@@ -138,7 +139,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 24.0 • Fully Supabase-backed app + combined Active Legs')
+st.caption('Version 25.0 • Import quality review + fully Supabase-backed tracking')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -581,6 +582,14 @@ def _render_bet_expanders(bets, key_prefix, show_schedule_override=False):
             bet,
             legs,
         )
+
+        quick_issues = _bet_quality_issues(
+            bet,
+            legs,
+        )
+
+        if quick_issues:
+            label = f"⚠️ {label}"
 
         with st.expander(
             label,
@@ -1681,7 +1690,604 @@ def _render_active_legs_tab():
     )
 
 
-tab_dash, tab_active, tab_legs, tab_futures, tab_history = st.tabs(['Dashboard','Active Bets','Active Legs','Season Futures','History'])
+
+def _is_round_robin_bet(bet):
+    bet_type = str(bet.get('bet_type') or '').upper()
+    return (
+        'ROUND ROBIN' in bet_type
+        or bet.get('round_robin_size') is not None
+        or bet.get('round_robin_combinations') is not None
+    )
+
+
+def _looks_like_player_market(market):
+    value = str(market or '').upper()
+
+    player_terms = (
+        'ANYTIME TD',
+        'FIRST TD',
+        'LAST TD',
+        'TO SCORE',
+        'PASSING YARD',
+        'PASSING TD',
+        'PASSING TOUCHDOWN',
+        'INTERCEPTION',
+        'RUSHING YARD',
+        'RUSHING TD',
+        'RUSHING TOUCHDOWN',
+        'RECEIVING YARD',
+        'RECEPTION',
+        'RECEIVING TD',
+        'RECEIVING TOUCHDOWN',
+    )
+
+    return any(term in value for term in player_terms)
+
+
+def _quality_issue(level, message):
+    return {
+        'level': level,
+        'message': message,
+    }
+
+
+def _bet_quality_issues(
+    bet,
+    legs,
+    sportsbook_id_counts=None,
+    screenshot_hash_counts=None,
+):
+    """
+    Conservative import validation.
+
+    These checks do not modify anything. They only flag records that are
+    worth reviewing. Matching-related warnings are primarily applied to
+    active bets so older settled bets are not unnecessarily flagged.
+    """
+    issues = []
+
+    sportsbook_id_counts = sportsbook_id_counts or {}
+    screenshot_hash_counts = screenshot_hash_counts or {}
+
+    bet_id = bet.get('id')
+    status = str(bet.get('status') or 'PENDING').strip().upper()
+    is_active = status in ACTIVE_STATUSES
+    is_rr = _is_round_robin_bet(bet)
+
+    # ----------------------------------------------------------
+    # Parent bet checks
+    # ----------------------------------------------------------
+    if not str(bet.get('sportsbook') or '').strip():
+        issues.append(
+            _quality_issue(
+                'ERROR',
+                'Sportsbook is missing.',
+            )
+        )
+
+    displayed_sport = _display_sport(bet, legs)
+    if displayed_sport == 'Football':
+        issues.append(
+            _quality_issue(
+                'WARNING',
+                'Sport is missing and could not be confidently inferred.',
+            )
+        )
+
+    if bet.get('stake') is None:
+        issues.append(
+            _quality_issue(
+                'ERROR',
+                'Wager/stake is missing.',
+            )
+        )
+
+    if (
+        not is_rr
+        and bet.get('current_odds') is None
+        and bet.get('original_odds') is None
+        and bet.get('boosted_odds') is None
+    ):
+        issues.append(
+            _quality_issue(
+                'WARNING',
+                'Parent odds are missing.',
+            )
+        )
+
+    if (
+        bet.get('to_pay') is None
+        and bet.get('cash_out') is None
+    ):
+        issues.append(
+            _quality_issue(
+                'WARNING',
+                'Potential/total payout is missing.',
+            )
+        )
+
+    declared_leg_count = bet.get('leg_count')
+    if declared_leg_count is not None:
+        try:
+            declared_leg_count = int(declared_leg_count)
+        except (TypeError, ValueError):
+            declared_leg_count = None
+
+    if (
+        declared_leg_count is not None
+        and declared_leg_count != len(legs)
+    ):
+        issues.append(
+            _quality_issue(
+                'ERROR',
+                f"Leg-count mismatch: bet says {declared_leg_count}, "
+                f"but {len(legs)} leg(s) are stored.",
+            )
+        )
+
+    if not legs:
+        issues.append(
+            _quality_issue(
+                'ERROR',
+                'No bet legs are stored.',
+            )
+        )
+
+    sportsbook_bet_id = str(
+        bet.get('sportsbook_bet_id') or ''
+    ).strip()
+
+    if (
+        sportsbook_bet_id
+        and sportsbook_id_counts.get(sportsbook_bet_id, 0) > 1
+    ):
+        issues.append(
+            _quality_issue(
+                'ERROR',
+                'Sportsbook bet ID appears more than once.',
+            )
+        )
+
+    screenshot_hash = str(
+        bet.get('screenshot_hash') or ''
+    ).strip()
+
+    if (
+        screenshot_hash
+        and screenshot_hash_counts.get(screenshot_hash, 0) > 1
+    ):
+        issues.append(
+            _quality_issue(
+                'ERROR',
+                'Screenshot hash appears more than once.',
+            )
+        )
+
+    # ----------------------------------------------------------
+    # Leg checks
+    # ----------------------------------------------------------
+    for leg in legs:
+        leg_num = leg.get('leg_index')
+        prefix = f"Leg {leg_num}: " if leg_num is not None else 'Leg: '
+
+        selection = str(
+            leg.get('selection') or ''
+        ).strip()
+
+        market = str(
+            leg.get('market') or ''
+        ).strip()
+
+        if not selection:
+            issues.append(
+                _quality_issue(
+                    'ERROR',
+                    prefix + 'selection is missing.',
+                )
+            )
+
+        if not market:
+            issues.append(
+                _quality_issue(
+                    'ERROR',
+                    prefix + 'market is missing.',
+                )
+            )
+
+        team_a = str(
+            leg.get('event_team_a') or ''
+        ).strip()
+
+        team_b = str(
+            leg.get('event_team_b') or ''
+        ).strip()
+
+        if (
+            team_a
+            and team_b
+            and team_a.casefold() == team_b.casefold()
+        ):
+            issues.append(
+                _quality_issue(
+                    'ERROR',
+                    prefix + f"suspicious self-matchup ({team_a} @ {team_b}).",
+                )
+            )
+
+        scope = str(
+            leg.get('tracking_scope') or ''
+        ).strip().upper()
+
+        player_market = _looks_like_player_market(
+            market
+        )
+
+        # Season futures require a player identity and season scope.
+        if scope == 'SEASON':
+            if not leg.get('espn_athlete_id'):
+                issues.append(
+                    _quality_issue(
+                        'WARNING',
+                        prefix + 'season future has no ESPN athlete match.',
+                    )
+                )
+
+            if not (
+                leg.get('future_season_year')
+                or leg.get('espn_season_year')
+            ):
+                issues.append(
+                    _quality_issue(
+                        'WARNING',
+                        prefix + 'season future has no season year.',
+                    )
+                )
+
+            continue
+
+        # Matching warnings are meaningful primarily while a bet is open.
+        if is_active:
+            if player_market:
+                # NFL player markets should be athlete-matched. CFB player
+                # props are intentionally not part of live tracking.
+                if (
+                    displayed_sport == 'NFL'
+                    and not leg.get('espn_athlete_id')
+                ):
+                    issues.append(
+                        _quality_issue(
+                            'WARNING',
+                            prefix + 'NFL player prop has no ESPN athlete match.',
+                        )
+                    )
+            elif not leg.get('espn_event_id'):
+                issues.append(
+                    _quality_issue(
+                        'WARNING',
+                        prefix + 'game/event has not been matched to ESPN.',
+                    )
+                )
+
+    # ----------------------------------------------------------
+    # Round Robin checks
+    # ----------------------------------------------------------
+    if is_rr:
+        rr_size = bet.get('round_robin_size')
+        rr_declared = bet.get('round_robin_combinations')
+
+        try:
+            rr_size_int = int(rr_size) if rr_size is not None else None
+        except (TypeError, ValueError):
+            rr_size_int = None
+
+        try:
+            rr_declared_int = (
+                int(rr_declared)
+                if rr_declared is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            rr_declared_int = None
+
+        if rr_size_int is None:
+            issues.append(
+                _quality_issue(
+                    'WARNING',
+                    'Round Robin size is missing.',
+                )
+            )
+        elif rr_size_int <= 0 or rr_size_int > len(legs):
+            issues.append(
+                _quality_issue(
+                    'ERROR',
+                    f"Round Robin size {rr_size_int} is invalid for "
+                    f"{len(legs)} leg(s).",
+                )
+            )
+        else:
+            expected = math.comb(
+                len(legs),
+                rr_size_int,
+            )
+
+            if (
+                rr_declared_int is not None
+                and rr_declared_int != expected
+            ):
+                issues.append(
+                    _quality_issue(
+                        'ERROR',
+                        f"Round Robin combination mismatch: expected "
+                        f"{expected}, stored metadata says {rr_declared_int}.",
+                    )
+                )
+
+            try:
+                stored_combos = list_round_robin_combinations(
+                    bet_id
+                )
+            except Exception:
+                stored_combos = []
+
+            if stored_combos and len(stored_combos) != expected:
+                issues.append(
+                    _quality_issue(
+                        'ERROR',
+                        f"Round Robin has {len(stored_combos)} stored "
+                        f"combination(s); expected {expected}.",
+                    )
+                )
+
+            if not stored_combos:
+                issues.append(
+                    _quality_issue(
+                        'WARNING',
+                        'Round Robin has no stored combination rows.',
+                    )
+                )
+
+    return issues
+
+
+def _quality_level(issues):
+    if any(x['level'] == 'ERROR' for x in issues):
+        return 'ERROR'
+    if issues:
+        return 'WARNING'
+    return 'OK'
+
+
+def _quality_icon(level):
+    return {
+        'ERROR': '❌',
+        'WARNING': '⚠️',
+        'OK': '✅',
+    }.get(level, '⚠️')
+
+
+def _render_import_review_tab():
+    st.subheader('Import Review')
+    st.caption(
+        'Automatically checks imported bets for missing data, parsing '
+        'inconsistencies, matching problems, duplicates, and Round Robin '
+        'issues. This screen is read-only; it does not change bet data.'
+    )
+
+    all_bets = list_bets()
+
+    if not all_bets:
+        st.info('No imported bets to review.')
+        return
+
+    # Duplicate checks need context from the full data set.
+    sportsbook_id_counts = {}
+    screenshot_hash_counts = {}
+
+    for bet in all_bets:
+        sportsbook_id = str(
+            bet.get('sportsbook_bet_id') or ''
+        ).strip()
+
+        if sportsbook_id:
+            sportsbook_id_counts[sportsbook_id] = (
+                sportsbook_id_counts.get(sportsbook_id, 0) + 1
+            )
+
+        screenshot_hash = str(
+            bet.get('screenshot_hash') or ''
+        ).strip()
+
+        if screenshot_hash:
+            screenshot_hash_counts[screenshot_hash] = (
+                screenshot_hash_counts.get(screenshot_hash, 0) + 1
+            )
+
+    # list_bets() is newest-first. Reviewing the latest 50 keeps this
+    # screen fast even after the tracker contains hundreds of bets.
+    recent_bets = all_bets[:50]
+
+    review_rows = []
+    details = {}
+
+    for bet in recent_bets:
+        legs = list_legs(
+            bet['id']
+        )
+
+        issues = _bet_quality_issues(
+            bet,
+            legs,
+            sportsbook_id_counts=sportsbook_id_counts,
+            screenshot_hash_counts=screenshot_hash_counts,
+        )
+
+        level = _quality_level(
+            issues
+        )
+
+        details[bet['id']] = {
+            'bet': bet,
+            'legs': legs,
+            'issues': issues,
+            'level': level,
+        }
+
+        review_rows.append({
+            'Result': f"{_quality_icon(level)} {level.title()}",
+            'Bet ID': bet.get('id'),
+            'Sportsbook': bet.get('sportsbook') or '',
+            'Sport': _display_sport(bet, legs),
+            'Bet': _bet_description(bet, legs),
+            'Status': str(
+                bet.get('status') or 'PENDING'
+            ).upper(),
+            'Wager': _safe_float(
+                bet.get('stake')
+            ),
+            'Issues': len(issues),
+            'Issue Summary': ' • '.join(
+                x['message']
+                for x in issues
+            ),
+        })
+
+    ok_count = sum(
+        1
+        for row in review_rows
+        if row['Result'].startswith('✅')
+    )
+    warning_count = sum(
+        1
+        for row in review_rows
+        if row['Result'].startswith('⚠️')
+    )
+    error_count = sum(
+        1
+        for row in review_rows
+        if row['Result'].startswith('❌')
+    )
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric('Reviewed', len(review_rows))
+    m2.metric('Looks Good', ok_count)
+    m3.metric('Needs Review', warning_count)
+    m4.metric('Import Problems', error_count)
+
+    show_all = st.checkbox(
+        'Show bets that passed all checks',
+        value=False,
+        key='import_review_show_all',
+    )
+
+    table_rows = (
+        review_rows
+        if show_all
+        else [
+            row
+            for row in review_rows
+            if not row['Result'].startswith('✅')
+        ]
+    )
+
+    if not table_rows:
+        st.success(
+            'The 50 most recent imports passed all current quality checks.'
+        )
+        return
+
+    review_df = pd.DataFrame(
+        table_rows
+    )
+
+    st.dataframe(
+        review_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            'Result': st.column_config.TextColumn(
+                'Check',
+                width='small',
+            ),
+            'Bet ID': st.column_config.NumberColumn(
+                'Bet',
+                format='%d',
+                width='small',
+            ),
+            'Sportsbook': st.column_config.TextColumn(
+                'Sportsbook',
+                width='small',
+            ),
+            'Sport': st.column_config.TextColumn(
+                'Sport',
+                width='small',
+            ),
+            'Bet': st.column_config.TextColumn(
+                'Bet Description',
+                width='large',
+            ),
+            'Status': st.column_config.TextColumn(
+                'Status',
+                width='small',
+            ),
+            'Wager': st.column_config.NumberColumn(
+                'Wager',
+                format='$%.2f',
+                width='small',
+            ),
+            'Issues': st.column_config.NumberColumn(
+                'Issues',
+                format='%d',
+                width='small',
+            ),
+            'Issue Summary': st.column_config.TextColumn(
+                'Why',
+                width='large',
+            ),
+        },
+    )
+
+    flagged_ids = [
+        int(row['Bet ID'])
+        for row in table_rows
+        if int(row['Issues']) > 0
+    ]
+
+    if flagged_ids:
+        st.markdown('#### Review details')
+
+    for bet_id in flagged_ids:
+        item = details[bet_id]
+        bet = item['bet']
+        legs = item['legs']
+        issues = item['issues']
+        level = item['level']
+
+        label = (
+            f"{_quality_icon(level)} Bet {bet_id} • "
+            f"{_bet_description(bet, legs)}"
+        )
+
+        with st.expander(
+            label,
+            expanded=False,
+        ):
+            for issue in issues:
+                if issue['level'] == 'ERROR':
+                    st.error(
+                        issue['message']
+                    )
+                else:
+                    st.warning(
+                        issue['message']
+                    )
+
+            st.caption(
+                'These are review flags only. A warning does not '
+                'automatically mean the imported bet is wrong.'
+            )
+
+
+tab_dash, tab_active, tab_legs, tab_review, tab_futures, tab_history = st.tabs(['Dashboard','Active Bets','Active Legs','Import Review','Season Futures','History'])
 
 with tab_dash:
     _render_dashboard(list_bets())
@@ -1766,6 +2372,10 @@ with tab_active:
 
 with tab_legs:
     _render_active_legs_tab()
+
+
+with tab_review:
+    _render_import_review_tab()
 
 
 with tab_futures:
