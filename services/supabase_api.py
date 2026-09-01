@@ -436,6 +436,25 @@ def update_leg_manual_status(leg_id, status):
     ) or []
 
 
+
+def set_big_win_hidden(bet_id, hidden=True):
+    """
+    Persist whether a qualifying big win should be hidden from the
+    Big Wins tab. This does not remove the bet or affect analytics.
+    """
+    return rest_request(
+        "bets",
+        method="PATCH",
+        query={
+            "id": f"eq.{int(bet_id)}",
+        },
+        body={
+            "big_win_hidden": bool(hidden),
+        },
+        prefer="return=representation",
+    ) or []
+
+
 def list_round_robin_combinations(bet_id):
     """
     Return Round Robin combinations plus their linked bet-leg IDs.
