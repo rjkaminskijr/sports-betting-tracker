@@ -437,6 +437,63 @@ def update_leg_manual_status(leg_id, status):
 
 
 
+
+def list_all_table_rows(
+    table,
+    order="id.asc",
+    page_size=1000,
+):
+    # Read a whole Supabase table using PostgREST paging.
+    rows = []
+    offset = 0
+    page_size = max(1, min(int(page_size), 1000))
+
+    while True:
+        query = {
+            "select": "*",
+            "limit": str(page_size),
+            "offset": str(offset),
+        }
+
+        if order:
+            query["order"] = order
+
+        page = rest_request(
+            table,
+            query=query,
+            timeout=120,
+        ) or []
+
+        rows.extend(page)
+
+        if len(page) < page_size:
+            break
+
+        offset += page_size
+
+    return rows
+
+
+def export_backup_tables():
+    # Database-record backup. Screenshot image bytes remain in Storage.
+    table_orders = {
+        "bets": "id.asc",
+        "bet_legs": "id.asc",
+        "bet_combinations": "id.asc",
+        "bet_combination_legs": "id.asc",
+        "incoming_bet_screenshots": "id.asc",
+    }
+
+    return {
+        table: list_all_table_rows(
+            table,
+            order=order,
+        )
+        for table, order in table_orders.items()
+    }
+
+
+
 def set_big_win_hidden(bet_id, hidden=True):
     """
     Persist whether a qualifying big win should be hidden from the
