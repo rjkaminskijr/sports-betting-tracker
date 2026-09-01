@@ -139,7 +139,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 27.0 • Search/filter datetime fix + import review + Supabase tracking')
+st.caption('Version 29.0 • Exposure view + colored History + Supabase tracking')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -591,10 +591,29 @@ def _render_bet_expanders(bets, key_prefix, show_schedule_override=False):
         if quick_issues:
             label = f"⚠️ {label}"
 
-        with st.expander(
-            label,
-            expanded=False,
-        ):
+        bet_status = str(
+            bet.get('status') or 'PENDING'
+        ).strip().upper()
+
+        if key_prefix == 'history' and bet_status == 'WON':
+            bet_container = st.status(
+                label,
+                state='complete',
+                expanded=False,
+            )
+        elif key_prefix == 'history' and bet_status == 'LOST':
+            bet_container = st.status(
+                label,
+                state='error',
+                expanded=False,
+            )
+        else:
+            bet_container = st.expander(
+                label,
+                expanded=False,
+            )
+
+        with bet_container:
             m1, m2, m3, m4, m5 = st.columns(5)
 
             m1.metric(
@@ -1052,10 +1071,31 @@ def _render_summary_dataframe(df, group_col):
 
 
 def _dashboard_leg_exposure(all_bets):
+    """
+    Active game-day exposure.
+
+    Season-future bets are excluded. Player/team wager exposure is
+    counted once per parent bet, even if the same player/team appears
+    multiple times within that bet.
+    """
+    future_bet_ids = set()
+
+    try:
+        for future_leg in list_future_legs():
+            if future_leg.get('bet_row_id') is not None:
+                future_bet_ids.add(
+                    int(future_leg['bet_row_id'])
+                )
+    except Exception:
+        future_bet_ids = set()
+
     active_bets = [
         bet
         for bet in all_bets
-        if _is_active_status(bet.get('status'))
+        if (
+            _is_active_status(bet.get('status'))
+            and int(bet.get('id')) not in future_bet_ids
+        )
     ]
 
     player_rows = []
@@ -1066,13 +1106,39 @@ def _dashboard_leg_exposure(all_bets):
     pending_legs = 0
 
     for bet in active_bets:
-        stake = _safe_float(bet.get('stake')) or 0.0
-        potential = _safe_float(bet.get('to_pay')) or 0.0
-        legs = list_legs(bet['id'])
+        bet_id = int(
+            bet.get('id')
+        )
+        stake = _safe_float(
+            bet.get('stake')
+        ) or 0.0
+        potential = _safe_float(
+            bet.get('to_pay')
+        ) or 0.0
+        legs = list_legs(
+            bet_id
+        )
+
+        seen_players = set()
+        seen_teams = set()
 
         for leg in legs:
+            if (
+                str(
+                    leg.get('tracking_scope')
+                    or ''
+                )
+                .strip()
+                .upper()
+                == 'SEASON'
+            ):
+                continue
+
             active_leg_count += 1
-            leg_status = str(leg.get('status') or 'PENDING').upper()
+            leg_status = str(
+                leg.get('status')
+                or 'PENDING'
+            ).upper()
 
             if leg_status == 'WON':
                 winning_legs += 1
@@ -1081,8 +1147,14 @@ def _dashboard_leg_exposure(all_bets):
             else:
                 pending_legs += 1
 
-            player = str(leg.get('selection') or '').strip()
-            market = str(leg.get('market') or '').strip()
+            player = str(
+                leg.get('selection')
+                or ''
+            ).strip()
+            market = str(
+                leg.get('market')
+                or ''
+            ).strip()
 
             is_player = bool(
                 leg.get('espn_athlete_id')
@@ -1090,6 +1162,7 @@ def _dashboard_leg_exposure(all_bets):
                     token in market.lower()
                     for token in [
                         'td scorer',
+                        'touchdown scorer',
                         'receiving',
                         'rushing',
                         'passing',
@@ -1098,27 +1171,45 @@ def _dashboard_leg_exposure(all_bets):
                 )
             )
 
-            if player and is_player:
+            player_key = player.casefold()
+
+            if (
+                player
+                and is_player
+                and player_key not in seen_players
+            ):
+                seen_players.add(
+                    player_key
+                )
                 player_rows.append({
                     'Player': player,
-                    'Bet ID': bet.get('id'),
+                    'Bet ID': bet_id,
                     'Wager Exposure': stake,
                     'Potential Return': potential,
                 })
 
-            teams = []
             for value in [
                 leg.get('event_team_a'),
                 leg.get('event_team_b'),
             ]:
-                value = str(value or '').strip()
-                if value and value not in teams:
-                    teams.append(value)
+                team = str(
+                    value or ''
+                ).strip()
 
-            for team in teams:
+                if not team:
+                    continue
+
+                team_key = team.casefold()
+
+                if team_key in seen_teams:
+                    continue
+
+                seen_teams.add(
+                    team_key
+                )
                 team_rows.append({
                     'Team': team,
-                    'Bet ID': bet.get('id'),
+                    'Bet ID': bet_id,
                     'Wager Exposure': stake,
                     'Potential Return': potential,
                 })
@@ -1127,33 +1218,61 @@ def _dashboard_leg_exposure(all_bets):
         if not rows:
             return pd.DataFrame()
 
-        frame = pd.DataFrame(rows)
+        frame = pd.DataFrame(
+            rows
+        )
 
-        return (
-            frame.groupby(label)
+        summary = (
+            frame.groupby(
+                label,
+                as_index=False,
+            )
             .agg(
                 Bets=('Bet ID', 'nunique'),
                 Wager_Exposure=('Wager Exposure', 'sum'),
                 Potential_Return=('Potential Return', 'sum'),
             )
-            .reset_index()
             .rename(columns={
                 'Wager_Exposure': 'Wager Exposure',
                 'Potential_Return': 'Potential Return',
             })
-            .sort_values(
-                ['Wager Exposure', 'Potential Return'],
-                ascending=False,
+        )
+
+        summary['Concentration'] = summary['Bets'].apply(
+            lambda x: (
+                'HIGH'
+                if int(x) >= 4
+                else (
+                    'MEDIUM'
+                    if int(x) >= 2
+                    else ''
+                )
             )
         )
 
+        return summary.sort_values(
+            [
+                'Wager Exposure',
+                'Potential Return',
+                'Bets',
+            ],
+            ascending=False,
+        )
+
     return {
+        'active_bet_count': len(active_bets),
         'active_leg_count': active_leg_count,
         'winning_legs': winning_legs,
         'losing_legs': losing_legs,
         'pending_legs': pending_legs,
-        'players': summarize(player_rows, 'Player'),
-        'teams': summarize(team_rows, 'Team'),
+        'players': summarize(
+            player_rows,
+            'Player',
+        ),
+        'teams': summarize(
+            team_rows,
+            'Team',
+        ),
     }
 
 
@@ -1444,6 +1563,173 @@ def _render_dashboard(all_bets):
             'Combos W/L/P',
             f"{rr['won']}/{rr['lost']}/{rr['pending']}",
         )
+
+
+
+def _render_exposure_tab(all_bets):
+    st.subheader('Active Exposure')
+    st.caption(
+        'Game-day player and team exposure across active bets. '
+        'Season Futures are excluded. Each parent bet counts only once '
+        'per player/team, even if that name appears multiple times in the bet.'
+    )
+
+    exposure = _dashboard_leg_exposure(
+        all_bets
+    )
+
+    players = exposure['players'].copy()
+    teams = exposure['teams'].copy()
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric(
+        'Active Game Bets',
+        exposure['active_bet_count'],
+    )
+    m2.metric(
+        'Unique Players',
+        0 if players.empty else len(players),
+    )
+    m3.metric(
+        'Unique Teams',
+        0 if teams.empty else len(teams),
+    )
+
+    search = st.text_input(
+        'Search exposure',
+        placeholder='Player or team...',
+        key='exposure_search',
+    ).strip().casefold()
+
+    if search:
+        if not players.empty:
+            players = players[
+                players['Player']
+                .astype(str)
+                .str.casefold()
+                .str.contains(
+                    search,
+                    regex=False,
+                    na=False,
+                )
+            ]
+
+        if not teams.empty:
+            teams = teams[
+                teams['Team']
+                .astype(str)
+                .str.casefold()
+                .str.contains(
+                    search,
+                    regex=False,
+                    na=False,
+                )
+            ]
+
+    pcol, tcol = st.columns(2)
+
+    with pcol:
+        st.markdown('#### Player Exposure')
+
+        if players.empty:
+            st.info('No active player exposure.')
+        else:
+            st.dataframe(
+                players,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Bets': st.column_config.NumberColumn(
+                        'Active Bets',
+                        format='%d',
+                    ),
+                    'Wager Exposure': st.column_config.NumberColumn(
+                        'Wager Exposure',
+                        format='$%.2f',
+                    ),
+                    'Potential Return': st.column_config.NumberColumn(
+                        'Potential Return',
+                        format='$%.2f',
+                    ),
+                    'Concentration': st.column_config.TextColumn(
+                        'Exposure Flag',
+                    ),
+                },
+            )
+
+    with tcol:
+        st.markdown('#### Team Exposure')
+
+        if teams.empty:
+            st.info('No active team exposure.')
+        else:
+            st.dataframe(
+                teams,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Bets': st.column_config.NumberColumn(
+                        'Active Bets',
+                        format='%d',
+                    ),
+                    'Wager Exposure': st.column_config.NumberColumn(
+                        'Wager Exposure',
+                        format='$%.2f',
+                    ),
+                    'Potential Return': st.column_config.NumberColumn(
+                        'Potential Return',
+                        format='$%.2f',
+                    ),
+                    'Concentration': st.column_config.TextColumn(
+                        'Exposure Flag',
+                    ),
+                },
+            )
+
+    concentrated_players = (
+        players[
+            players['Bets'] >= 2
+        ]
+        if not players.empty
+        else pd.DataFrame()
+    )
+
+    concentrated_teams = (
+        teams[
+            teams['Bets'] >= 2
+        ]
+        if not teams.empty
+        else pd.DataFrame()
+    )
+
+    if (
+        not concentrated_players.empty
+        or not concentrated_teams.empty
+    ):
+        st.markdown('#### Concentrated Exposure')
+
+        messages = []
+
+        if not concentrated_players.empty:
+            for _, row in concentrated_players.head(10).iterrows():
+                messages.append(
+                    f"Player: {row['Player']} is in "
+                    f"{int(row['Bets'])} active bets "
+                    f"({_money(row['Wager Exposure'])} wager exposure)."
+                )
+
+        if not concentrated_teams.empty:
+            for _, row in concentrated_teams.head(10).iterrows():
+                messages.append(
+                    f"Team: {row['Team']} is in "
+                    f"{int(row['Bets'])} active bets "
+                    f"({_money(row['Wager Exposure'])} wager exposure)."
+                )
+
+        for message in messages:
+            st.warning(
+                message
+            )
 
 
 def _active_leg_rows_excluding_futures():
@@ -2682,7 +2968,7 @@ def _filter_active_legs_rows_ui(
     )
 
 
-tab_dash, tab_active, tab_legs, tab_review, tab_futures, tab_history = st.tabs(['Dashboard','Active Bets','Active Legs','Import Review','Season Futures','History'])
+tab_dash, tab_active, tab_legs, tab_exposure, tab_review, tab_futures, tab_history = st.tabs(['Dashboard','Active Bets','Active Legs','Exposure','Import Review','Season Futures','History'])
 
 with tab_dash:
     _render_dashboard(list_bets())
@@ -2765,18 +3051,25 @@ with tab_active:
             include_date=True,
         )
 
-        if not rows:
-            st.info('No active bets match the selected filters.')
-        else:
-            _render_bet_expanders(
-                rows,
-                'active',
-                show_schedule_override=True,
-            )
+        active_results = st.empty()
+
+        with active_results.container():
+            if not rows:
+                st.info('No active bets match the selected filters.')
+            else:
+                _render_bet_expanders(
+                    rows,
+                    'active',
+                    show_schedule_override=True,
+                )
 
 
 with tab_legs:
     _render_active_legs_tab()
+
+
+with tab_exposure:
+    _render_exposure_tab(list_bets())
 
 
 with tab_review:
@@ -3004,12 +3297,17 @@ with tab_history:
             include_date=True,
         )
 
-        if rows:
-            _render_bet_expanders(
-                rows,
-                'history',
-                show_schedule_override=False,
-            )
+        history_results = st.empty()
+
+        with history_results.container():
+            if rows:
+                _render_bet_expanders(
+                    rows,
+                    'history',
+                    show_schedule_override=False,
+                )
+            else:
+                st.info('No history bets match the selected filters.')
 
         export_rows, _ = _build_bet_table_rows(rows)
         export_df = pd.DataFrame(export_rows)
