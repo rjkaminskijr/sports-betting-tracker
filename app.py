@@ -4,14 +4,11 @@ import hmac
 import pandas as pd
 import streamlit as st
 
-from database.db import (
-    init_db,
+from services.supabase_api import (
     list_bets,
     list_legs,
     update_bet_espn_scope,
     update_leg_manual_status,
-)
-from services.supabase_api import (
     refresh_all_active_bets,
     recheck_leg,
     recalculate_parent_from_manual_leg,
@@ -133,7 +130,6 @@ def _require_login():
 
 
 _require_login()
-init_db()
 
 logout_col, _ = st.columns([1, 8])
 with logout_col:
@@ -142,7 +138,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 23.0 • Combined duplicate Active Legs + login + expandable Supabase tracking')
+st.caption('Version 24.0 • Fully Supabase-backed app + combined Active Legs')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
