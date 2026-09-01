@@ -1,6 +1,11 @@
 from datetime import datetime, timedelta
+import csv
 import hmac
+import io
+import json
 import math
+import zipfile
+from xml.sax.saxutils import escape as xml_escape
 
 import pandas as pd
 import streamlit as st
@@ -11,6 +16,7 @@ from services.supabase_api import (
     update_bet_espn_scope,
     update_leg_manual_status,
     set_big_win_hidden,
+    export_backup_tables,
     refresh_all_active_bets,
     recheck_leg,
     recalculate_parent_from_manual_leg,
@@ -179,7 +185,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 34.0 • 14-day History archive + Big Wins + analytics')
+st.caption('Version 35.0 • Full export/backup + 14-day History + Big Wins')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -3472,7 +3478,527 @@ def _render_big_wins_tab(all_bets):
                         )
 
 
-tab_dash, tab_active, tab_legs, tab_exposure, tab_review, tab_futures, tab_big_wins, tab_history = st.tabs(['Dashboard','Active Bets','Active Legs','Exposure','Import Review','Season Futures','Big Wins','History'])
+BACKUP_SCHEMA_VERSION = 1
+
+
+def _export_json_value(value):
+    if value is None:
+        return ''
+
+    if isinstance(value, (dict, list)):
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    return value
+
+
+def _records_to_csv_bytes(records):
+    output = io.StringIO(newline='')
+
+    if not records:
+        return b''
+
+    fields = []
+    seen = set()
+
+    for record in records:
+        for field in record.keys():
+            if field not in seen:
+                seen.add(field)
+                fields.append(field)
+
+    writer = csv.DictWriter(
+        output,
+        fieldnames=fields,
+        extrasaction='ignore',
+    )
+    writer.writeheader()
+
+    for record in records:
+        writer.writerow({
+            field: _export_json_value(record.get(field))
+            for field in fields
+        })
+
+    return output.getvalue().encode('utf-8-sig')
+
+
+def _xlsx_col_name(index):
+    index = int(index)
+    result = ''
+
+    while index > 0:
+        index, remainder = divmod(index - 1, 26)
+        result = chr(65 + remainder) + result
+
+    return result
+
+
+def _xlsx_cell_xml(row_num, col_num, value, style_id=0):
+    ref = f"{_xlsx_col_name(col_num)}{row_num}"
+    style_attr = f' s="{style_id}"' if style_id else ''
+
+    if value is None:
+        return (
+            f'<c r="{ref}"{style_attr} t="inlineStr">'
+            f'<is><t></t></is></c>'
+        )
+
+    if isinstance(value, bool):
+        return (
+            f'<c r="{ref}"{style_attr} t="b">'
+            f'<v>{1 if value else 0}</v></c>'
+        )
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return (
+            f'<c r="{ref}"{style_attr}>'
+            f'<v>{value}</v></c>'
+        )
+
+    if isinstance(value, (dict, list)):
+        value = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    value = str(value)
+
+    if len(value) > 32767:
+        value = value[:32740] + '… [truncated]'
+
+    return (
+        f'<c r="{ref}"{style_attr} t="inlineStr">'
+        f'<is><t xml:space="preserve">'
+        f'{xml_escape(value)}'
+        f'</t></is></c>'
+    )
+
+
+def _xlsx_sheet_xml(records):
+    fields = []
+    seen = set()
+
+    for record in records:
+        for field in record.keys():
+            if field not in seen:
+                seen.add(field)
+                fields.append(field)
+
+    if not fields:
+        fields = ['No Data']
+        records = [{'No Data': 'No records'}]
+
+    rows_xml = []
+
+    header_cells = ''.join(
+        _xlsx_cell_xml(
+            1,
+            index,
+            field,
+            style_id=1,
+        )
+        for index, field in enumerate(fields, start=1)
+    )
+    rows_xml.append(f'<row r="1">{header_cells}</row>')
+
+    for row_num, record in enumerate(records, start=2):
+        cells = ''.join(
+            _xlsx_cell_xml(
+                row_num,
+                col_num,
+                _export_json_value(record.get(field)),
+            )
+            for col_num, field in enumerate(fields, start=1)
+        )
+        rows_xml.append(f'<row r="{row_num}">{cells}</row>')
+
+    last_col = _xlsx_col_name(len(fields))
+    widths = []
+
+    for col_num, field in enumerate(fields, start=1):
+        sample = [
+            str(_export_json_value(row.get(field)) or '')
+            for row in records[:100]
+        ]
+
+        width = max(
+            [len(str(field))]
+            + [min(len(value), 40) for value in sample]
+        )
+        width = min(max(width + 2, 10), 42)
+
+        widths.append(
+            f'<col min="{col_num}" max="{col_num}" '
+            f'width="{width}" customWidth="1"/>'
+        )
+
+    auto_filter = (
+        f'<autoFilter ref="A1:{last_col}{len(records) + 1}"/>'
+    )
+
+    return f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetViews>
+    <sheetView workbookViewId="0">
+      <pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>
+    </sheetView>
+  </sheetViews>
+  <cols>{''.join(widths)}</cols>
+  <sheetData>{''.join(rows_xml)}</sheetData>
+  {auto_filter}
+</worksheet>'''
+
+
+def _make_xlsx_bytes(sheet_records):
+    output = io.BytesIO()
+    sheet_names = list(sheet_records.keys())
+
+    content_types = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+        '<Default Extension="xml" ContentType="application/xml"/>',
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>',
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>',
+    ]
+
+    for index in range(1, len(sheet_names) + 1):
+        content_types.append(
+            f'<Override PartName="/xl/worksheets/sheet{index}.xml" '
+            f'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        )
+
+    content_types.append('</Types>')
+
+    root_rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+    Target="xl/workbook.xml"/>
+</Relationships>'''
+
+    workbook_sheets = []
+    workbook_rels = []
+
+    for index, name in enumerate(sheet_names, start=1):
+        safe_name = str(name)[:31]
+
+        workbook_sheets.append(
+            f'<sheet name="{xml_escape(safe_name)}" '
+            f'sheetId="{index}" r:id="rId{index}"/>'
+        )
+
+        workbook_rels.append(
+            f'<Relationship Id="rId{index}" '
+            f'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+            f'Target="worksheets/sheet{index}.xml"/>'
+        )
+
+    styles_rid = len(sheet_names) + 1
+    workbook_rels.append(
+        f'<Relationship Id="rId{styles_rid}" '
+        f'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" '
+        f'Target="styles.xml"/>'
+    )
+
+    workbook_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+ xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>{''.join(workbook_sheets)}</sheets>
+</workbook>'''
+
+    workbook_rels_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  {''.join(workbook_rels)}
+</Relationships>'''
+
+    styles_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="2">
+    <font><sz val="11"/><name val="Calibri"/></font>
+    <font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="3">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FF1F4E78"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+  <borders count="1">
+    <border><left/><right/><top/><bottom/><diagonal/></border>
+  </borders>
+  <cellStyleXfs count="1">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>
+  </cellStyleXfs>
+  <cellXfs count="2">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+  </cellXfs>
+  <cellStyles count="1">
+    <cellStyle name="Normal" xfId="0" builtinId="0"/>
+  </cellStyles>
+</styleSheet>'''
+
+    with zipfile.ZipFile(
+        output,
+        'w',
+        compression=zipfile.ZIP_DEFLATED,
+    ) as zf:
+        zf.writestr(
+            '[Content_Types].xml',
+            ''.join(content_types),
+        )
+        zf.writestr('_rels/.rels', root_rels)
+        zf.writestr('xl/workbook.xml', workbook_xml)
+        zf.writestr(
+            'xl/_rels/workbook.xml.rels',
+            workbook_rels_xml,
+        )
+        zf.writestr('xl/styles.xml', styles_xml)
+
+        for index, name in enumerate(sheet_names, start=1):
+            zf.writestr(
+                f'xl/worksheets/sheet{index}.xml',
+                _xlsx_sheet_xml(sheet_records[name]),
+            )
+
+    return output.getvalue()
+
+
+def _backup_payload(tables):
+    return {
+        'backup_schema_version': BACKUP_SCHEMA_VERSION,
+        'exported_at': datetime.now().astimezone().isoformat(
+            timespec='seconds'
+        ),
+        'notes': (
+            'Database record backup. Supabase Storage image bytes are '
+            'not embedded; incoming screenshot storage paths are preserved.'
+        ),
+        'counts': {
+            name: len(rows)
+            for name, rows in tables.items()
+        },
+        'tables': tables,
+    }
+
+
+def _season_future_export_rows(bet_legs):
+    return [
+        row
+        for row in bet_legs
+        if str(
+            row.get('tracking_scope')
+            or ''
+        ).strip().upper() == 'SEASON'
+    ]
+
+
+def _make_backup_zip_bytes(tables):
+    payload = _backup_payload(tables)
+    season_futures = _season_future_export_rows(
+        tables.get('bet_legs', [])
+    )
+
+    output = io.BytesIO()
+
+    with zipfile.ZipFile(
+        output,
+        'w',
+        compression=zipfile.ZIP_DEFLATED,
+    ) as zf:
+        zf.writestr(
+            'sports_bet_tracker_backup.json',
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            ),
+        )
+
+        for table, rows in tables.items():
+            zf.writestr(
+                f'csv/{table}.csv',
+                _records_to_csv_bytes(rows),
+            )
+
+        zf.writestr(
+            'csv/season_futures.csv',
+            _records_to_csv_bytes(season_futures),
+        )
+
+        readme = (
+            'SPORTS BET TRACKER BACKUP\\n'
+            '=========================\\n\\n'
+            f"Exported: {payload['exported_at']}\\n"
+            f"Backup schema version: {BACKUP_SCHEMA_VERSION}\\n\\n"
+            'Contents:\\n'
+            '- sports_bet_tracker_backup.json: complete record snapshot\\n'
+            '- csv/: one CSV per exported table\\n'
+            '- csv/season_futures.csv: convenience view of tracked futures\\n\\n'
+            'Important:\\n'
+            '- This backup contains database records and IDs.\\n'
+            '- Supabase Storage image bytes are NOT embedded.\\n'
+            '- Screenshot storage paths and metadata remain in '
+            'incoming_bet_screenshots.\\n'
+            '- Hiding/archive settings are included because they live '
+            'on the bets rows.\\n'
+        )
+
+        zf.writestr('README.txt', readme)
+
+    return output.getvalue()
+
+
+def _render_export_tab():
+    st.subheader('Export & Backup')
+    st.caption(
+        'Create portable copies of the tracker without changing Supabase. '
+        'Exports include all historical bets, including bets hidden from '
+        'the normal 14-day History view.'
+    )
+
+    if st.button(
+        'Prepare Export Files',
+        type='primary',
+        key='prepare_export_files',
+    ):
+        try:
+            with st.spinner(
+                'Reading tracker data from Supabase...'
+            ):
+                tables = export_backup_tables()
+
+                season_futures = _season_future_export_rows(
+                    tables.get('bet_legs', [])
+                )
+
+                workbook_sheets = {
+                    'Bets': tables.get('bets', []),
+                    'Bet Legs': tables.get('bet_legs', []),
+                    'RR Combinations': tables.get('bet_combinations', []),
+                    'RR Combo Legs': tables.get('bet_combination_legs', []),
+                    'Season Futures': season_futures,
+                    'Imports': tables.get('incoming_bet_screenshots', []),
+                }
+
+                st.session_state[
+                    'export_xlsx_bytes'
+                ] = _make_xlsx_bytes(workbook_sheets)
+
+                st.session_state[
+                    'export_backup_zip_bytes'
+                ] = _make_backup_zip_bytes(tables)
+
+                st.session_state[
+                    'export_counts'
+                ] = {
+                    key: len(value)
+                    for key, value in tables.items()
+                }
+
+                st.session_state[
+                    'export_prepared_at'
+                ] = datetime.now().astimezone().isoformat(
+                    timespec='seconds'
+                )
+
+            st.success('Export files are ready.')
+        except Exception as exc:
+            st.error(
+                f'Export preparation failed: {exc}'
+            )
+
+    prepared_at = st.session_state.get(
+        'export_prepared_at'
+    )
+    counts = st.session_state.get(
+        'export_counts'
+    )
+
+    if prepared_at and counts:
+        st.caption(f'Prepared {prepared_at}')
+
+        c1, c2, c3, c4, c5 = st.columns(5)
+
+        c1.metric('Bets', counts.get('bets', 0))
+        c2.metric('Legs', counts.get('bet_legs', 0))
+        c3.metric(
+            'RR Combos',
+            counts.get('bet_combinations', 0),
+        )
+        c4.metric(
+            'RR Links',
+            counts.get('bet_combination_legs', 0),
+        )
+        c5.metric(
+            'Imports',
+            counts.get('incoming_bet_screenshots', 0),
+        )
+
+    xlsx_bytes = st.session_state.get(
+        'export_xlsx_bytes'
+    )
+    zip_bytes = st.session_state.get(
+        'export_backup_zip_bytes'
+    )
+
+    if xlsx_bytes and zip_bytes:
+        today = datetime.now().strftime('%Y-%m-%d')
+        d1, d2 = st.columns(2)
+
+        with d1:
+            st.markdown('#### Excel Workbook')
+            st.caption(
+                'Separate sheets for Bets, Bet Legs, Round Robin data, '
+                'Season Futures, and import metadata.'
+            )
+
+            st.download_button(
+                'Download Excel Export',
+                data=xlsx_bytes,
+                file_name=f'sports_bet_tracker_{today}.xlsx',
+                mime=(
+                    'application/vnd.openxmlformats-officedocument.'
+                    'spreadsheetml.sheet'
+                ),
+                key='download_full_excel',
+                use_container_width=True,
+            )
+
+        with d2:
+            st.markdown('#### Full Backup')
+            st.caption(
+                'Complete JSON record snapshot plus individual CSV files. '
+                'Best option for safekeeping/recovery.'
+            )
+
+            st.download_button(
+                'Download Full Backup ZIP',
+                data=zip_bytes,
+                file_name=(
+                    f'sports_bet_tracker_backup_{today}.zip'
+                ),
+                mime='application/zip',
+                key='download_full_backup_zip',
+                use_container_width=True,
+            )
+
+        st.info(
+            'The backup preserves database rows, IDs, parser data, '
+            'Round Robin links, futures fields, and screenshot metadata. '
+            'It does not download the actual screenshot image files from '
+            'Supabase Storage.'
+        )
+
+
+
+tab_dash, tab_active, tab_legs, tab_exposure, tab_review, tab_futures, tab_big_wins, tab_history, tab_export = st.tabs(['Dashboard','Active Bets','Active Legs','Exposure','Import Review','Season Futures','Big Wins','History','Export'])
 
 with tab_dash:
     _render_dashboard(list_bets())
@@ -3915,3 +4441,7 @@ with tab_history:
     else:
         st.info('No bets saved yet.')
 
+
+
+with tab_export:
+    _render_export_tab()
