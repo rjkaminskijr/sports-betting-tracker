@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import hmac
 import math
 
@@ -10,6 +10,7 @@ from services.supabase_api import (
     list_legs,
     update_bet_espn_scope,
     update_leg_manual_status,
+    set_big_win_hidden,
     refresh_all_active_bets,
     recheck_leg,
     recalculate_parent_from_manual_leg,
@@ -178,7 +179,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 33.0 • Ordered odds analytics + bright History + Exposure')
+st.caption('Version 34.0 • 14-day History archive + Big Wins + analytics')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -3266,7 +3267,212 @@ def _filter_active_legs_rows_ui(
     )
 
 
-tab_dash, tab_active, tab_legs, tab_exposure, tab_review, tab_futures, tab_history = st.tabs(['Dashboard','Active Bets','Active Legs','Exposure','Import Review','Season Futures','History'])
+
+HISTORY_DEFAULT_DAYS = 14
+BIG_WIN_DEFAULT_PROFIT = 100.0
+
+
+def _bet_reference_datetime(bet):
+    for value in (
+        bet.get('placed_at'),
+        bet.get('source_captured_at'),
+        bet.get('created_at'),
+    ):
+        dt = _filter_parse_datetime(
+            value
+        )
+        if dt:
+            return dt
+    return None
+
+
+def _history_recent_bets(
+    bets,
+    days=HISTORY_DEFAULT_DAYS,
+):
+    cutoff = (
+        datetime.now()
+        - timedelta(
+            days=int(days)
+        )
+    ).date()
+
+    recent = []
+
+    for bet in bets:
+        dt = _bet_reference_datetime(
+            bet
+        )
+
+        # Keep undated bets visible rather than silently archiving them.
+        if dt is None or dt.date() >= cutoff:
+            recent.append(
+                bet
+            )
+
+    return recent
+
+
+def _render_big_wins_tab(all_bets):
+    st.subheader('Big Wins')
+    st.caption(
+        'Settled wins remain here even after they age out of the normal '
+        '14-day History view. Hiding a win only removes it from this tab; '
+        'it remains in Supabase and continues to count in all statistics.'
+    )
+
+    threshold = st.number_input(
+        'Minimum profit',
+        min_value=0.0,
+        value=float(BIG_WIN_DEFAULT_PROFIT),
+        step=25.0,
+        format='%.2f',
+        key='big_win_threshold',
+    )
+
+    show_hidden = st.checkbox(
+        'Show hidden big wins',
+        value=False,
+        key='show_hidden_big_wins',
+    )
+
+    qualifying = []
+
+    for bet in all_bets:
+        status = str(
+            bet.get('status') or ''
+        ).strip().upper()
+
+        if status != 'WON':
+            continue
+
+        pnl = _profit_loss(
+            bet
+        )
+
+        if pnl is None:
+            continue
+
+        pnl = float(
+            pnl
+        )
+
+        if pnl < float(threshold):
+            continue
+
+        hidden = bool(
+            bet.get('big_win_hidden')
+        )
+
+        if hidden and not show_hidden:
+            continue
+
+        legs = list_legs(
+            bet['id']
+        )
+
+        qualifying.append(
+            (
+                pnl,
+                bet,
+                legs,
+                hidden,
+            )
+        )
+
+    qualifying.sort(
+        key=lambda item: item[0],
+        reverse=True,
+    )
+
+    if not qualifying:
+        st.info(
+            f'No wins with at least {_money(threshold)} profit.'
+        )
+        return
+
+    st.caption(
+        f"{len(qualifying)} qualifying big win(s)."
+    )
+
+    for pnl, bet, legs, hidden in qualifying:
+        label = (
+            f"{'🙈 ' if hidden else ''}"
+            f"{_bet_description(bet, legs)}"
+            f" • PROFIT {_money(pnl)}"
+            f" • WAGER {_money(bet.get('stake'))}"
+        )
+
+        with st.expander(
+            label,
+            expanded=False,
+        ):
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric(
+                'Profit',
+                _money(pnl),
+            )
+            c2.metric(
+                'Wager',
+                _money(bet.get('stake')),
+            )
+            c3.metric(
+                'Paid',
+                _money(bet.get('paid')),
+            )
+            c4.metric(
+                'Odds',
+                _odds(
+                    bet.get('current_odds')
+                    if bet.get('current_odds') is not None
+                    else bet.get('original_odds')
+                ),
+            )
+
+            _render_leg_table(
+                legs,
+                bet,
+            )
+
+            if hidden:
+                if st.button(
+                    'Restore to Big Wins',
+                    key=f"restore_big_win_{bet['id']}",
+                ):
+                    try:
+                        set_big_win_hidden(
+                            bet['id'],
+                            False,
+                        )
+                        st.success(
+                            'Big win restored.'
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(
+                            f'Could not restore big win: {exc}'
+                        )
+            else:
+                if st.button(
+                    'Hide from Big Wins',
+                    key=f"hide_big_win_{bet['id']}",
+                ):
+                    try:
+                        set_big_win_hidden(
+                            bet['id'],
+                            True,
+                        )
+                        st.success(
+                            'Big win hidden. The bet was not deleted.'
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(
+                            f'Could not hide big win: {exc}'
+                        )
+
+
+tab_dash, tab_active, tab_legs, tab_exposure, tab_review, tab_futures, tab_big_wins, tab_history = st.tabs(['Dashboard','Active Bets','Active Legs','Exposure','Import Review','Season Futures','Big Wins','History'])
 
 with tab_dash:
     _render_dashboard(list_bets())
@@ -3579,14 +3785,40 @@ with tab_futures:
             'No season futures are currently being tracked.'
         )
 
+with tab_big_wins:
+    _render_big_wins_tab(list_bets())
+
+
 with tab_history:
     st.subheader('Bet History')
-    rows = list_bets()
+    all_history_rows = list_bets()
+
+    show_older_history = st.checkbox(
+        'Show bets older than 14 days',
+        value=False,
+        key='show_older_history',
+    )
+
+    rows = (
+        all_history_rows
+        if show_older_history
+        else _history_recent_bets(
+            all_history_rows,
+            HISTORY_DEFAULT_DAYS,
+        )
+    )
 
     if rows:
-        st.caption(
-            'Click the arrow beside a bet description to show its legs.'
-        )
+        if show_older_history:
+            st.caption(
+                'Showing full history. Click the arrow beside a bet '
+                'description to show its legs.'
+            )
+        else:
+            st.caption(
+                'Showing the last 14 days only. Older bets remain in '
+                'Supabase and continue to count in Dashboard statistics.'
+            )
 
         rows = _filter_bets_ui(
             rows,
