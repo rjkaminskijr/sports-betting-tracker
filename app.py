@@ -178,7 +178,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 32.0 • Historical analytics + bright History + Exposure')
+st.caption('Version 33.0 • Ordered odds analytics + bright History + Exposure')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -1615,11 +1615,42 @@ def _render_historical_analytics(settled_df):
 
     with c1:
         st.markdown('**By Odds Range**')
+
+        odds_summary = _settled_performance_summary(
+            analytics,
+            'Odds Range',
+        )
+
+        odds_order = {
+            '≤ -200': 0,
+            '-199 to -101': 1,
+            '-100 to +99': 2,
+            '+100 to +299': 3,
+            '+300 to +999': 4,
+            '+1000+': 5,
+            'Unknown': 6,
+        }
+
+        if not odds_summary.empty:
+            odds_summary['_sort_order'] = (
+                odds_summary['Odds Range']
+                .map(odds_order)
+                .fillna(999)
+            )
+
+            odds_summary = (
+                odds_summary
+                .sort_values(
+                    '_sort_order',
+                    ascending=True,
+                )
+                .drop(
+                    columns=['_sort_order']
+                )
+            )
+
         _render_settled_analytics_table(
-            _settled_performance_summary(
-                analytics,
-                'Odds Range',
-            ),
+            odds_summary,
             'Odds Range',
         )
 
