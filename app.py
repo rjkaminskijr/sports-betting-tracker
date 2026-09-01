@@ -139,7 +139,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 26.0 • Search & filters + import review + Supabase tracking')
+st.caption('Version 27.0 • Search/filter datetime fix + import review + Supabase tracking')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -2329,6 +2329,46 @@ def _bet_search_blob(bet, legs):
     ).casefold()
 
 
+
+def _filter_parse_datetime(value):
+    if value in (None, ''):
+        return None
+
+    if isinstance(value, datetime):
+        return value
+
+    raw = str(value).strip()
+
+    if not raw:
+        return None
+
+    # ISO 8601 first, including trailing Z.
+    try:
+        return datetime.fromisoformat(
+            raw.replace('Z', '+00:00')
+        )
+    except Exception:
+        pass
+
+    # Common sportsbook / legacy formats.
+    for fmt in (
+        '%Y-%m-%d %H:%M:%S',
+        '%Y-%m-%d %H:%M',
+        '%m/%d/%Y %I:%M %p',
+        '%m/%d/%Y %H:%M',
+        '%Y-%m-%d',
+    ):
+        try:
+            return datetime.strptime(
+                raw,
+                fmt,
+            )
+        except Exception:
+            continue
+
+    return None
+
+
 def _filter_bets_ui(
     bets,
     key_prefix,
@@ -2419,7 +2459,7 @@ def _filter_bets_ui(
                     or bet.get('created_at')
                 )
 
-                dt = _parse_datetime_value(
+                dt = _filter_parse_datetime(
                     raw
                 )
 
@@ -2496,7 +2536,7 @@ def _filter_bets_ui(
                 or bet.get('created_at')
             )
 
-            dt = _parse_datetime_value(
+            dt = _filter_parse_datetime(
                 raw
             )
 
