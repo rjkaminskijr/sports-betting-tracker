@@ -335,6 +335,107 @@ def recalculate_parent_from_manual_leg(leg_id):
         "settlement_only_leg_id": int(leg_id),
     })
 
+
+ACTIVE_BET_STATUSES = {"PENDING", "OPEN", "LIVE", "IN_PROGRESS"}
+
+
+def list_bets(status=None):
+    """
+    Supabase-backed replacement for the legacy database.db.list_bets().
+
+    The app historically requests list_bets("OPEN"). Supabase uses
+    PENDING as its normal open state, so OPEN is treated as all active
+    statuses for backward-compatible UI behavior.
+    """
+    query = {
+        "select": "*",
+        "order": "placed_at.desc.nullslast,id.desc",
+    }
+
+    if status:
+        normalized = str(status).strip().upper()
+
+        if normalized == "OPEN":
+            query["status"] = "in.(PENDING,OPEN,LIVE,IN_PROGRESS)"
+        else:
+            query["status"] = f"eq.{normalized}"
+
+    return rest_request(
+        "bets",
+        query=query,
+    ) or []
+
+
+def list_legs(bet_row_id):
+    """
+    Supabase-backed replacement for database.db.list_legs().
+    """
+    return rest_request(
+        "bet_legs",
+        query={
+            "select": "*",
+            "bet_row_id": f"eq.{int(bet_row_id)}",
+            "order": "leg_index.asc.nullslast,id.asc",
+        },
+    ) or []
+
+
+def update_bet_espn_scope(
+    bet_id,
+    season_year=None,
+    season_type=None,
+    week=None,
+):
+    """
+    Persist an explicit ESPN schedule scope directly to Supabase.
+
+    ESPN season type:
+      1 = preseason
+      2 = regular season
+      3 = postseason
+
+    Null values restore automatic/date-based matching.
+    """
+    return rest_request(
+        "bets",
+        method="PATCH",
+        query={
+            "id": f"eq.{int(bet_id)}",
+        },
+        body={
+            "espn_season_year": season_year,
+            "espn_season_type": season_type,
+            "espn_week": week,
+        },
+        prefer="return=representation",
+    ) or []
+
+
+def update_leg_manual_status(leg_id, status):
+    """
+    Update one leg status directly in Supabase.
+
+    OPEN is normalized to PENDING because PENDING is the canonical
+    open status used by the current Edge Functions.
+    """
+    normalized = str(status or "PENDING").strip().upper()
+
+    if normalized == "OPEN":
+        normalized = "PENDING"
+
+    return rest_request(
+        "bet_legs",
+        method="PATCH",
+        query={
+            "id": f"eq.{int(leg_id)}",
+        },
+        body={
+            "status": normalized,
+        },
+        prefer="return=representation",
+    ) or []
+
+
 def list_round_robin_combinations(bet_id):
     """
     Return Round Robin combinations plus their linked bet-leg IDs.
