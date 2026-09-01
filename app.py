@@ -22,6 +22,45 @@ from services.supabase_api import (
 
 st.set_page_config(page_title='Sports Bet Tracker', page_icon='🎟️', layout='wide')
 
+st.markdown(
+    """
+    <style>
+    /* History settlement colors: full expandable bar, not just text. */
+    details:has(.history-win-marker) > summary {
+        background: #138A3D !important;
+        border: 1px solid #28D764 !important;
+        border-radius: 0.5rem !important;
+    }
+
+    details:has(.history-loss-marker) > summary {
+        background: #B4232F !important;
+        border: 1px solid #FF5263 !important;
+        border-radius: 0.5rem !important;
+    }
+
+    details:has(.history-win-marker) > summary *,
+    details:has(.history-loss-marker) > summary * {
+        color: #FFFFFF !important;
+        font-weight: 700 !important;
+    }
+
+    details:has(.history-win-marker) > summary:hover {
+        background: #17A84B !important;
+    }
+
+    details:has(.history-loss-marker) > summary:hover {
+        background: #D12D3B !important;
+    }
+
+    .history-win-marker,
+    .history-loss-marker {
+        display: none;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 def _auth_secret(auth, *names):
     for name in names:
@@ -139,7 +178,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 30.0 • Exposure view + colored History labels + Supabase tracking')
+st.caption('Version 31.0 • Bright full-bar History colors + Exposure + Supabase tracking')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -595,22 +634,25 @@ def _render_bet_expanders(bets, key_prefix, show_schedule_override=False):
             bet.get('status') or 'PENDING'
         ).strip().upper()
 
-        # Keep the normal expander/arrow behavior in History.
-        # Color the entire label based on settlement result instead of
-        # using st.status(), which only changes the small status icon.
-        display_label = label
-
-        if key_prefix == 'history' and bet_status == 'WON':
-            display_label = f":green-background[{label}]"
-        elif key_prefix == 'history' and bet_status == 'LOST':
-            display_label = f":red-background[{label}]"
-
+        # Keep the normal expander/arrow behavior. For History, a hidden
+        # marker inside the expanded content lets the CSS above color the
+        # entire summary bar via the :has() selector.
         bet_container = st.expander(
-            display_label,
+            label,
             expanded=False,
         )
 
         with bet_container:
+            if key_prefix == 'history' and bet_status == 'WON':
+                st.markdown(
+                    '<span class="history-win-marker"></span>',
+                    unsafe_allow_html=True,
+                )
+            elif key_prefix == 'history' and bet_status == 'LOST':
+                st.markdown(
+                    '<span class="history-loss-marker"></span>',
+                    unsafe_allow_html=True,
+                )
             m1, m2, m3, m4, m5 = st.columns(5)
 
             m1.metric(
