@@ -139,7 +139,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 25.0 • Import quality review + fully Supabase-backed tracking')
+st.caption('Version 26.0 • Search & filters + import review + Supabase tracking')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -1543,6 +1543,15 @@ def _render_active_legs_tab():
         st.info('No active non-futures legs.')
         return
 
+    rows = _filter_active_legs_rows_ui(
+        rows,
+        'active_legs',
+    )
+
+    if not rows:
+        st.info('No active legs match the selected filters.')
+        return
+
     df = pd.DataFrame(rows)
 
     # Combine duplicate legs that represent the same wager.
@@ -2287,6 +2296,352 @@ def _render_import_review_tab():
             )
 
 
+
+def _normalized_text(value):
+    return str(value or '').strip().casefold()
+
+
+def _bet_search_blob(bet, legs):
+    parts = [
+        bet.get('sportsbook'),
+        bet.get('sportsbook_bet_id'),
+        bet.get('bet_type'),
+        bet.get('sport'),
+        bet.get('headline'),
+        bet.get('subtitle'),
+        bet.get('event_name'),
+        bet.get('status'),
+    ]
+
+    for leg in legs:
+        parts.extend([
+            leg.get('selection'),
+            leg.get('market'),
+            leg.get('event_team_a'),
+            leg.get('event_team_b'),
+            leg.get('raw_leg_text'),
+        ])
+
+    return ' '.join(
+        str(x)
+        for x in parts
+        if x is not None
+    ).casefold()
+
+
+def _filter_bets_ui(
+    bets,
+    key_prefix,
+    include_status=True,
+    include_date=True,
+):
+    if not bets:
+        return bets
+
+    bet_leg_map = {
+        int(bet['id']): list_legs(bet['id'])
+        for bet in bets
+    }
+
+    sportsbooks = sorted({
+        str(bet.get('sportsbook') or '').strip()
+        for bet in bets
+        if str(bet.get('sportsbook') or '').strip()
+    })
+
+    sports = sorted({
+        _display_sport(
+            bet,
+            bet_leg_map[int(bet['id'])],
+        )
+        for bet in bets
+    })
+
+    bet_types = sorted({
+        str(bet.get('bet_type') or '').strip()
+        for bet in bets
+        if str(bet.get('bet_type') or '').strip()
+    })
+
+    statuses = sorted({
+        str(bet.get('status') or 'PENDING').strip().upper()
+        for bet in bets
+    })
+
+    st.markdown('#### Filters')
+
+    row1 = st.columns([2.2, 1.3, 1.1, 1.5])
+
+    search_text = row1[0].text_input(
+        'Search',
+        placeholder='Player, team, market, bet ID...',
+        key=f'{key_prefix}_search',
+    )
+
+    sportsbook_filter = row1[1].multiselect(
+        'Sportsbook',
+        sportsbooks,
+        key=f'{key_prefix}_sportsbook',
+    )
+
+    sport_filter = row1[2].multiselect(
+        'Sport',
+        sports,
+        key=f'{key_prefix}_sport',
+    )
+
+    bet_type_filter = row1[3].multiselect(
+        'Bet Type',
+        bet_types,
+        key=f'{key_prefix}_bet_type',
+    )
+
+    status_filter = []
+    date_range = None
+
+    if include_status or include_date:
+        row2 = st.columns([1.3, 1.7, 3])
+
+        if include_status:
+            status_filter = row2[0].multiselect(
+                'Status',
+                statuses,
+                key=f'{key_prefix}_status',
+            )
+
+        if include_date:
+            dated_values = []
+
+            for bet in bets:
+                raw = (
+                    bet.get('placed_at')
+                    or bet.get('source_captured_at')
+                    or bet.get('created_at')
+                )
+
+                dt = _parse_datetime_value(
+                    raw
+                )
+
+                if dt:
+                    dated_values.append(
+                        dt.date()
+                    )
+
+            if dated_values:
+                min_date = min(dated_values)
+                max_date = max(dated_values)
+
+                date_range = row2[1].date_input(
+                    'Date Range',
+                    value=(min_date, max_date),
+                    min_value=min_date,
+                    max_value=max_date,
+                    key=f'{key_prefix}_date',
+                )
+
+    filtered = []
+
+    search_value = _normalized_text(
+        search_text
+    )
+
+    for bet in bets:
+        legs = bet_leg_map[
+            int(bet['id'])
+        ]
+
+        if sportsbook_filter:
+            if str(
+                bet.get('sportsbook') or ''
+            ).strip() not in sportsbook_filter:
+                continue
+
+        displayed_sport = _display_sport(
+            bet,
+            legs,
+        )
+
+        if (
+            sport_filter
+            and displayed_sport not in sport_filter
+        ):
+            continue
+
+        if bet_type_filter:
+            if str(
+                bet.get('bet_type') or ''
+            ).strip() not in bet_type_filter:
+                continue
+
+        if status_filter:
+            status = str(
+                bet.get('status') or 'PENDING'
+            ).strip().upper()
+
+            if status not in status_filter:
+                continue
+
+        if search_value:
+            if search_value not in _bet_search_blob(
+                bet,
+                legs,
+            ):
+                continue
+
+        if include_date and date_range:
+            raw = (
+                bet.get('placed_at')
+                or bet.get('source_captured_at')
+                or bet.get('created_at')
+            )
+
+            dt = _parse_datetime_value(
+                raw
+            )
+
+            if dt:
+                if isinstance(
+                    date_range,
+                    (tuple, list),
+                ):
+                    if len(date_range) == 2:
+                        start_date, end_date = date_range
+                    else:
+                        start_date = end_date = date_range[0]
+                else:
+                    start_date = end_date = date_range
+
+                if (
+                    dt.date() < start_date
+                    or dt.date() > end_date
+                ):
+                    continue
+
+        filtered.append(
+            bet
+        )
+
+    st.caption(
+        f"Showing {len(filtered)} of {len(bets)} bet(s)."
+    )
+
+    return filtered
+
+
+def _filter_active_legs_rows_ui(
+    rows,
+    key_prefix='active_legs',
+):
+    if not rows:
+        return rows
+
+    df = pd.DataFrame(rows)
+
+    st.markdown('#### Filters')
+
+    c1, c2, c3, c4 = st.columns(
+        [2.3, 1.2, 1.0, 1.4]
+    )
+
+    search_text = c1.text_input(
+        'Search',
+        placeholder='Player, team, market, bet...',
+        key=f'{key_prefix}_search',
+    )
+
+    sportsbooks = sorted(
+        x
+        for x in df['Sportsbook'].dropna().unique().tolist()
+        if str(x).strip()
+    )
+
+    sports = sorted(
+        x
+        for x in df['Sport'].dropna().unique().tolist()
+        if str(x).strip()
+    )
+
+    markets = sorted(
+        x
+        for x in df['Market'].dropna().unique().tolist()
+        if str(x).strip()
+    )
+
+    sportsbook_filter = c2.multiselect(
+        'Sportsbook',
+        sportsbooks,
+        key=f'{key_prefix}_sportsbook',
+    )
+
+    sport_filter = c3.multiselect(
+        'Sport',
+        sports,
+        key=f'{key_prefix}_sport',
+    )
+
+    market_filter = c4.multiselect(
+        'Market',
+        markets,
+        key=f'{key_prefix}_market',
+    )
+
+    filtered = df.copy()
+
+    if sportsbook_filter:
+        filtered = filtered[
+            filtered['Sportsbook'].isin(
+                sportsbook_filter
+            )
+        ]
+
+    if sport_filter:
+        filtered = filtered[
+            filtered['Sport'].isin(
+                sport_filter
+            )
+        ]
+
+    if market_filter:
+        filtered = filtered[
+            filtered['Market'].isin(
+                market_filter
+            )
+        ]
+
+    search_value = _normalized_text(
+        search_text
+    )
+
+    if search_value:
+        mask = filtered.apply(
+            lambda row: search_value in ' '.join(
+                str(row.get(col) or '')
+                for col in [
+                    'Selection',
+                    'Market',
+                    'Game',
+                    'Bet',
+                    'Sportsbook',
+                    'Sport',
+                ]
+            ).casefold(),
+            axis=1,
+        )
+
+        filtered = filtered[
+            mask
+        ]
+
+    st.caption(
+        f"Showing {len(filtered)} of {len(df)} active leg occurrence(s)."
+    )
+
+    return filtered.to_dict(
+        orient='records'
+    )
+
+
 tab_dash, tab_active, tab_legs, tab_review, tab_futures, tab_history = st.tabs(['Dashboard','Active Bets','Active Legs','Import Review','Season Futures','History'])
 
 with tab_dash:
@@ -2363,11 +2718,21 @@ with tab_active:
             'Click the arrow beside a bet to show its legs and details.'
         )
 
-        _render_bet_expanders(
+        rows = _filter_bets_ui(
             rows,
             'active',
-            show_schedule_override=True,
+            include_status=True,
+            include_date=True,
         )
+
+        if not rows:
+            st.info('No active bets match the selected filters.')
+        else:
+            _render_bet_expanders(
+                rows,
+                'active',
+                show_schedule_override=True,
+            )
 
 
 with tab_legs:
@@ -2592,11 +2957,19 @@ with tab_history:
             'Click the arrow beside a bet description to show its legs.'
         )
 
-        _render_bet_expanders(
+        rows = _filter_bets_ui(
             rows,
             'history',
-            show_schedule_override=False,
+            include_status=True,
+            include_date=True,
         )
+
+        if rows:
+            _render_bet_expanders(
+                rows,
+                'history',
+                show_schedule_override=False,
+            )
 
         export_rows, _ = _build_bet_table_rows(rows)
         export_df = pd.DataFrame(export_rows)
