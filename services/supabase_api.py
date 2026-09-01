@@ -494,6 +494,109 @@ def export_backup_tables():
 
 
 
+
+def get_notification_settings():
+    rows = rest_request(
+        "notification_settings",
+        query={
+            "select": "*",
+            "id": "eq.1",
+            "limit": "1",
+        },
+    ) or []
+
+    if rows:
+        return rows[0]
+
+    return {
+        "id": 1,
+        "wins_enabled": True,
+        "losses_enabled": False,
+        "big_wins_enabled": True,
+        "big_win_profit_threshold": 100.0,
+        "import_failures_enabled": True,
+        "needs_review_enabled": False,
+        "tracking_errors_enabled": False,
+    }
+
+
+def update_notification_settings(settings):
+    allowed = {
+        "wins_enabled",
+        "losses_enabled",
+        "big_wins_enabled",
+        "big_win_profit_threshold",
+        "import_failures_enabled",
+        "needs_review_enabled",
+        "tracking_errors_enabled",
+    }
+
+    body = {
+        key: value
+        for key, value in (settings or {}).items()
+        if key in allowed
+    }
+
+    if "big_win_profit_threshold" in body:
+        body["big_win_profit_threshold"] = max(
+            0.0,
+            float(body["big_win_profit_threshold"]),
+        )
+
+    body["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    rows = rest_request(
+        "notification_settings",
+        method="PATCH",
+        query={
+            "id": "eq.1",
+        },
+        body=body,
+        prefer="return=representation",
+    ) or []
+
+    if rows:
+        return rows[0]
+
+    # This fallback is mainly useful if the migration created the table
+    # but the singleton row was removed accidentally.
+    insert_body = {
+        "id": 1,
+        "wins_enabled": True,
+        "losses_enabled": False,
+        "big_wins_enabled": True,
+        "big_win_profit_threshold": 100.0,
+        "import_failures_enabled": True,
+        "needs_review_enabled": False,
+        "tracking_errors_enabled": False,
+        **body,
+    }
+
+    rows = rest_request(
+        "notification_settings",
+        method="POST",
+        body=insert_body,
+        prefer="return=representation",
+    ) or []
+
+    return rows[0] if rows else insert_body
+
+
+def send_test_pushover(
+    title="Sports Bet Tracker",
+    message="✅ Pushover notifications are connected.",
+):
+    return invoke_edge_function(
+        "test-pushover",
+        body={
+            "title": str(title),
+            "message": str(message),
+        },
+        timeout=60,
+    )
+
+
+
 def set_big_win_hidden(bet_id, hidden=True):
     """
     Persist whether a qualifying big win should be hidden from the
