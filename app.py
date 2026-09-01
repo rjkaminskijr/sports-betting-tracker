@@ -139,7 +139,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 29.0 • Exposure view + colored History + Supabase tracking')
+st.caption('Version 30.0 • Exposure view + colored History labels + Supabase tracking')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -595,23 +595,20 @@ def _render_bet_expanders(bets, key_prefix, show_schedule_override=False):
             bet.get('status') or 'PENDING'
         ).strip().upper()
 
+        # Keep the normal expander/arrow behavior in History.
+        # Color the entire label based on settlement result instead of
+        # using st.status(), which only changes the small status icon.
+        display_label = label
+
         if key_prefix == 'history' and bet_status == 'WON':
-            bet_container = st.status(
-                label,
-                state='complete',
-                expanded=False,
-            )
+            display_label = f":green-background[{label}]"
         elif key_prefix == 'history' and bet_status == 'LOST':
-            bet_container = st.status(
-                label,
-                state='error',
-                expanded=False,
-            )
-        else:
-            bet_container = st.expander(
-                label,
-                expanded=False,
-            )
+            display_label = f":red-background[{label}]"
+
+        bet_container = st.expander(
+            display_label,
+            expanded=False,
+        )
 
         with bet_container:
             m1, m2, m3, m4, m5 = st.columns(5)
