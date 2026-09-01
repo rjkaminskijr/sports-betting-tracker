@@ -17,6 +17,9 @@ from services.supabase_api import (
     update_leg_manual_status,
     set_big_win_hidden,
     export_backup_tables,
+    get_notification_settings,
+    update_notification_settings,
+    send_test_pushover,
     refresh_all_active_bets,
     recheck_leg,
     recalculate_parent_from_manual_leg,
@@ -185,7 +188,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 35.0 • Full export/backup + 14-day History + Big Wins')
+st.caption('Version 36.0 • Notification controls + export/backup + Big Wins')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -3998,7 +4001,222 @@ def _render_export_tab():
 
 
 
-tab_dash, tab_active, tab_legs, tab_exposure, tab_review, tab_futures, tab_big_wins, tab_history, tab_export = st.tabs(['Dashboard','Active Bets','Active Legs','Exposure','Import Review','Season Futures','Big Wins','History','Export'])
+
+def _render_notification_settings_tab():
+    st.subheader('Notifications')
+    st.caption(
+        'Choose which Pushover alerts the tracker is allowed to send. '
+        'These settings are stored in Supabase and will be used by the '
+        'automatic notification pipeline.'
+    )
+
+    try:
+        settings = get_notification_settings()
+    except Exception as exc:
+        st.error(
+            'Could not load notification settings. '
+            'Make sure the v36 Supabase migration has been run.'
+        )
+        st.exception(exc)
+        return
+
+    with st.form(
+        'notification_settings_form',
+        clear_on_submit=False,
+    ):
+        st.markdown('#### Bet Results')
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+            wins_enabled = st.toggle(
+                'Winning bets',
+                value=bool(
+                    settings.get(
+                        'wins_enabled',
+                        True,
+                    )
+                ),
+                help=(
+                    'Send a notification when a bet settles as WON.'
+                ),
+            )
+
+        with c2:
+            losses_enabled = st.toggle(
+                'Losing bets',
+                value=bool(
+                    settings.get(
+                        'losses_enabled',
+                        False,
+                    )
+                ),
+                help=(
+                    'Send a notification when a bet settles as LOST.'
+                ),
+            )
+
+        st.markdown('#### Big Wins')
+
+        b1, b2 = st.columns([1, 1])
+
+        with b1:
+            big_wins_enabled = st.toggle(
+                'Big win alert',
+                value=bool(
+                    settings.get(
+                        'big_wins_enabled',
+                        True,
+                    )
+                ),
+                help=(
+                    'Send a special Big Win notification when profit '
+                    'meets the threshold.'
+                ),
+            )
+
+        with b2:
+            big_win_threshold = st.number_input(
+                'Minimum profit for Big Win',
+                min_value=0.0,
+                value=float(
+                    settings.get(
+                        'big_win_profit_threshold',
+                        100.0,
+                    )
+                    or 100.0
+                ),
+                step=25.0,
+                format='%.2f',
+                disabled=not big_wins_enabled,
+            )
+
+        st.markdown('#### Import & Tracking')
+
+        i1, i2, i3 = st.columns(3)
+
+        with i1:
+            import_failures_enabled = st.toggle(
+                'Import failures',
+                value=bool(
+                    settings.get(
+                        'import_failures_enabled',
+                        True,
+                    )
+                ),
+                help=(
+                    'Alert when a screenshot import fails.'
+                ),
+            )
+
+        with i2:
+            needs_review_enabled = st.toggle(
+                'Needs review',
+                value=bool(
+                    settings.get(
+                        'needs_review_enabled',
+                        False,
+                    )
+                ),
+                help=(
+                    'Alert when an imported bet is flagged for review.'
+                ),
+            )
+
+        with i3:
+            tracking_errors_enabled = st.toggle(
+                'Tracking / matching errors',
+                value=bool(
+                    settings.get(
+                        'tracking_errors_enabled',
+                        False,
+                    )
+                ),
+                help=(
+                    'Alert on live tracking or ESPN matching problems.'
+                ),
+            )
+
+        save_settings = st.form_submit_button(
+            'Save Notification Settings',
+            type='primary',
+            use_container_width=True,
+        )
+
+    if save_settings:
+        try:
+            saved = update_notification_settings({
+                'wins_enabled': wins_enabled,
+                'losses_enabled': losses_enabled,
+                'big_wins_enabled': big_wins_enabled,
+                'big_win_profit_threshold': float(
+                    big_win_threshold
+                ),
+                'import_failures_enabled': import_failures_enabled,
+                'needs_review_enabled': needs_review_enabled,
+                'tracking_errors_enabled': tracking_errors_enabled,
+            })
+
+            st.success(
+                'Notification settings saved.'
+            )
+
+            st.session_state[
+                'notification_settings_last_saved'
+            ] = saved
+
+        except Exception as exc:
+            st.error(
+                f'Could not save notification settings: {exc}'
+            )
+
+    st.divider()
+    st.markdown('#### Pushover Connection Test')
+    st.caption(
+        'This only sends a test message. It does not change any '
+        'notification preferences.'
+    )
+
+    if st.button(
+        'Send Test Notification',
+        key='send_pushover_test_from_settings',
+    ):
+        try:
+            with st.spinner(
+                'Sending test notification...'
+            ):
+                result = send_test_pushover(
+                    title='Sports Bet Tracker',
+                    message=(
+                        '✅ Notification settings are connected.'
+                    ),
+                )
+
+            if result and result.get('ok'):
+                st.success(
+                    'Test notification sent to Pushover.'
+                )
+            else:
+                st.error(
+                    'Pushover test did not report success.'
+                )
+                if result is not None:
+                    st.json(result)
+
+        except Exception as exc:
+            st.error(
+                f'Pushover test failed: {exc}'
+            )
+
+    st.info(
+        'Saving these controls does not send automatic settlement alerts '
+        'yet. The next step is wiring update-live-bets to these settings '
+        'with duplicate protection.'
+    )
+
+
+
+tab_dash, tab_active, tab_legs, tab_exposure, tab_review, tab_futures, tab_big_wins, tab_history, tab_notifications, tab_export = st.tabs(['Dashboard','Active Bets','Active Legs','Exposure','Import Review','Season Futures','Big Wins','History','Notifications','Export'])
 
 with tab_dash:
     _render_dashboard(list_bets())
@@ -4441,6 +4659,10 @@ with tab_history:
     else:
         st.info('No bets saved yet.')
 
+
+
+with tab_notifications:
+    _render_notification_settings_tab()
 
 
 with tab_export:
