@@ -2006,10 +2006,6 @@ def _render_dashboard(all_bets):
     )
     e5.metric('Pending Legs', exposure['pending_legs'])
 
-    _render_dashboard_parlay_progress(
-        all_bets
-    )
-
     st.markdown('#### Performance Breakdowns')
     b1, b2, b3 = st.columns(3)
 
