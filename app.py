@@ -188,7 +188,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 36.0 • Notification controls + export/backup + Big Wins')
+st.caption('Version 37.0 • Parlay leg progress + notification controls + export/backup + Big Wins')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -605,9 +605,20 @@ def _expander_bet_label(bet, legs):
         else bet.get('original_odds')
     )
 
+    progress_text = ''
+
+    if len(legs) > 1:
+        progress = _parlay_leg_progress(
+            legs
+        )
+        progress_text = (
+            f"  •  {progress['summary']}"
+        )
+
     return (
         f"{description}  •  "
-        f"{status}  •  "
+        f"{status}"
+        f"{progress_text}  •  "
         f"{wager}  •  {odds}"
     )
 
@@ -1725,6 +1736,217 @@ def _render_historical_analytics(settled_df):
         )
 
 
+
+def _parlay_leg_progress(legs):
+    """
+    Compact child-leg progress for multi-leg bets.
+
+    WON = correct
+    LOST = incorrect
+    PUSH/VOID/etc. = neutral
+    LIVE = unsettled leg whose live_state is LIVE
+    PENDING = all other unsettled legs
+    """
+    correct = 0
+    lost = 0
+    neutral = 0
+    live = 0
+    pending = 0
+
+    neutral_statuses = {
+        'PUSH',
+        'VOID',
+        'VOIDED',
+        'CANCELLED',
+        'CANCELED',
+    }
+
+    settled_leg_statuses = {
+        'WON',
+        'LOST',
+        *neutral_statuses,
+    }
+
+    for leg in legs:
+        status = str(
+            leg.get('status') or 'PENDING'
+        ).strip().upper()
+
+        live_state = str(
+            leg.get('live_state') or ''
+        ).strip().upper()
+
+        if status == 'WON':
+            correct += 1
+        elif status == 'LOST':
+            lost += 1
+        elif status in neutral_statuses:
+            neutral += 1
+        elif status not in settled_leg_statuses and live_state == 'LIVE':
+            live += 1
+        else:
+            pending += 1
+
+    total = len(legs)
+
+    parts = [
+        f"✓ {correct}/{total}",
+    ]
+
+    if lost:
+        parts.append(
+            f"✕ {lost}"
+        )
+
+    if live:
+        parts.append(
+            f"● {live} Live"
+        )
+
+    if pending:
+        parts.append(
+            f"○ {pending} Pending"
+        )
+
+    if neutral:
+        parts.append(
+            f"↔ {neutral} Push/Void"
+        )
+
+    return {
+        'correct': correct,
+        'lost': lost,
+        'live': live,
+        'pending': pending,
+        'neutral': neutral,
+        'total': total,
+        'summary': '   '.join(parts),
+        'unsettled': live + pending,
+    }
+
+
+def _dashboard_parlay_progress_rows(all_bets):
+    rows = []
+
+    for bet in all_bets:
+        try:
+            bet_id = int(
+                bet.get('id')
+            )
+        except (TypeError, ValueError):
+            continue
+
+        legs = list_legs(
+            bet_id
+        )
+
+        if len(legs) <= 1:
+            continue
+
+        progress = _parlay_leg_progress(
+            legs
+        )
+
+        parent_status = str(
+            bet.get('status') or 'PENDING'
+        ).strip().upper()
+
+        # Dashboard is for parlays that are still relevant right now.
+        # A LOST parent stays visible while child legs are still tracking,
+        # matching update-live-bets v16.4 behavior.
+        if (
+            not _is_active_status(parent_status)
+            and not (
+                parent_status == 'LOST'
+                and progress['unsettled'] > 0
+            )
+        ):
+            continue
+
+        rows.append({
+            'Bet': _bet_description(
+                bet,
+                legs,
+            ),
+            'Sportsbook': bet.get('sportsbook') or '',
+            'Leg Progress': progress['summary'],
+            'Correct': progress['correct'],
+            'Lost': progress['lost'],
+            'Live': progress['live'],
+            'Pending': progress['pending'],
+            'Push/Void': progress['neutral'],
+            'Status': parent_status,
+            'To Pay': _safe_float(
+                bet.get('to_pay')
+            ),
+            'Bet ID': bet_id,
+        })
+
+    return pd.DataFrame(
+        rows
+    )
+
+
+def _render_dashboard_parlay_progress(all_bets):
+    parlay_df = _dashboard_parlay_progress_rows(
+        all_bets
+    )
+
+    st.markdown('#### Parlay Progress')
+
+    if parlay_df.empty:
+        st.caption(
+            'No active multi-leg bets to track.'
+        )
+        return
+
+    st.caption(
+        '✓ = settled winner • ✕ = settled loser • '
+        '● = currently live • ○ = not started/pending. '
+        'A lost parlay remains here while unfinished legs continue tracking.'
+    )
+
+    st.dataframe(
+        parlay_df,
+        use_container_width=True,
+        hide_index=True,
+        column_order=[
+            'Bet',
+            'Leg Progress',
+            'Status',
+            'To Pay',
+            'Sportsbook',
+            'Bet ID',
+        ],
+        column_config={
+            'Bet': st.column_config.TextColumn(
+                'Parlay',
+            ),
+            'Leg Progress': st.column_config.TextColumn(
+                'Legs',
+                help=(
+                    'WON legs count as correct. '
+                    'Push/Void legs are neutral.'
+                ),
+            ),
+            'Status': st.column_config.TextColumn(
+                'Bet Status',
+            ),
+            'To Pay': st.column_config.NumberColumn(
+                'To Pay',
+                format='$%.2f',
+            ),
+            'Sportsbook': st.column_config.TextColumn(
+                'Book',
+            ),
+            'Bet ID': st.column_config.NumberColumn(
+                'ID',
+                format='%d',
+            ),
+        },
+    )
+
+
 def _render_dashboard(all_bets):
     bet_df = _dashboard_bet_rows(all_bets)
 
@@ -1783,6 +2005,10 @@ def _render_dashboard(all_bets):
         f"{exposure['winning_legs']} / {exposure['losing_legs']}",
     )
     e5.metric('Pending Legs', exposure['pending_legs'])
+
+    _render_dashboard_parlay_progress(
+        all_bets
+    )
 
     st.markdown('#### Performance Breakdowns')
     b1, b2, b3 = st.columns(3)
