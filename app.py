@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import csv
 import hmac
 import io
@@ -2568,7 +2569,7 @@ def _render_active_legs_tab():
 
     st.caption(
         'Active Legs last loaded: '
-        + datetime.now().strftime('%I:%M:%S %p')
+        + datetime.now(ZoneInfo('America/New_York')).strftime('%I:%M:%S %p ET')
     )
 
 
