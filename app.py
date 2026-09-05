@@ -2341,6 +2341,15 @@ def _active_leg_rows_excluding_futures():
                 'Status': leg_status,
                 'Live': leg.get('live_value') or '',
                 'Event ID': leg.get('espn_event_id') or '',
+
+                # Internal Active Legs sort fields.
+                # These are intentionally not shown as table columns.
+                '_Event Time': leg.get('event_time'),
+                '_Game State': (
+                    str(leg.get('live_state') or '')
+                    .strip()
+                    .upper()
+                ),
             })
 
     return rows
@@ -2431,6 +2440,51 @@ def _render_active_legs_tab():
 
     combined_df = pd.DataFrame(
         combined_rows
+    )
+
+    # Active Legs sort order:
+    #   1. Games currently LIVE
+    #   2. All other active games by scheduled kickoff, earliest first
+    #   3. Missing/invalid kickoff times last
+    #
+    # event_time is stored as text/UTC in Supabase, so normalize it to a
+    # timezone-aware pandas timestamp strictly for sorting.
+    combined_df['_event_time_sort'] = pd.to_datetime(
+        combined_df['_Event Time'],
+        errors='coerce',
+        utc=True,
+    )
+
+    combined_df['_live_sort'] = (
+        combined_df['_Game State']
+        .eq('LIVE')
+        .map({
+            True: 0,
+            False: 1,
+        })
+    )
+
+    combined_df = (
+        combined_df
+        .sort_values(
+            by=[
+                '_live_sort',
+                '_event_time_sort',
+                'Sport',
+                'Game',
+                'Selection',
+            ],
+            ascending=[
+                True,
+                True,
+                True,
+                True,
+                True,
+            ],
+            na_position='last',
+            kind='stable',
+        )
+        .reset_index(drop=True)
     )
 
     # Keep the most useful columns visible first.
