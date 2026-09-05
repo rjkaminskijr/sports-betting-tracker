@@ -2355,11 +2355,15 @@ def _active_leg_rows_excluding_futures():
     return rows
 
 
+@st.fragment(
+    run_every=timedelta(minutes=10)
+)
 def _render_active_legs_tab():
     st.subheader('Active Legs')
     st.caption(
         'Individual active game-bet legs. Bets tracked on the '
-        'Season Futures tab are excluded completely.'
+        'Season Futures tab are excluded completely. '
+        'This table automatically reloads from Supabase every 10 minutes.'
     )
 
     rows = _active_leg_rows_excluding_futures()
@@ -2561,6 +2565,12 @@ def _render_active_legs_tab():
             ),
         },
     )
+
+    st.caption(
+        'Active Legs last loaded: '
+        + datetime.now().strftime('%I:%M:%S %p')
+    )
+
 
     st.caption(
         f"{len(rows)} active leg occurrence(s) combined into "
