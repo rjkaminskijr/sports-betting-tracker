@@ -302,6 +302,20 @@ def _bet_description(bet, legs):
     return f"{sport} Bet"
 
 
+def _is_bonus_bet(bet):
+    promo = str(bet.get('promo') or '').strip().upper()
+    return any(
+        marker in promo
+        for marker in ('BONUS BET', 'FREE BET', 'FREEBET')
+    )
+
+
+def _cash_at_risk(bet):
+    """Cash actually risked by the user; bonus/free bets are $0 exposure."""
+    stake = _safe_float(bet.get('stake')) or 0.0
+    return 0.0 if _is_bonus_bet(bet) else stake
+
+
 def _profit_loss(bet):
     stake = _safe_float(bet.get('stake'))
     paid = _safe_float(bet.get('paid'))
@@ -310,14 +324,19 @@ def _profit_loss(bet):
     if stake is None:
         return None
 
+    cash_at_risk = _cash_at_risk(bet)
+
     if status == 'LOST':
-        return -stake
+        return -cash_at_risk
 
     if status in {'PUSH', 'VOID', 'VOIDED', 'CANCELLED', 'CANCELED'}:
         return 0.0
 
     if paid is not None and status in SETTLED_STATUSES:
-        return paid - stake
+        # Bonus/free-bet stakes are promotional credits, not user cash.
+        # FanDuel-style bonus bets also do not return the promo stake, so
+        # the entire paid amount is profit when the bet wins.
+        return paid - cash_at_risk
 
     return None
 
@@ -1055,6 +1074,7 @@ def _dashboard_bet_rows(all_bets):
     for bet in all_bets:
         status = _dashboard_status(bet)
         stake = _safe_float(bet.get('stake')) or 0.0
+        cash_at_risk = _cash_at_risk(bet)
         returned = _dashboard_returned(bet)
         pnl = _profit_loss(bet)
         to_pay = _safe_float(bet.get('to_pay')) or 0.0
@@ -1081,7 +1101,9 @@ def _dashboard_bet_rows(all_bets):
             'Bet Type': _dashboard_bet_type(bet),
             'Sport': _dashboard_sport(bet),
             'Status': status,
-            'Wagered': stake,
+            'Wagered': cash_at_risk,
+            'Stake': stake,
+            'Bonus Bet': _is_bonus_bet(bet),
             'Returned': returned,
             'P/L': pnl if pnl is not None else 0.0,
             'Potential Return': to_pay,
