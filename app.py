@@ -189,7 +189,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 37.0 • Parlay leg progress + notification controls + export/backup + Big Wins')
+st.caption('Version 37.6 • Dashboard season futures separated + bonus-bet cash risk + notifications + export/backup + Big Wins')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -1970,6 +1970,46 @@ def _render_dashboard_parlay_progress(all_bets):
     )
 
 
+
+def _dashboard_future_bet_ids():
+    """Return parent bet IDs that contain one or more season-future legs."""
+    future_bet_ids = set()
+
+    try:
+        for future_leg in list_future_legs():
+            bet_id = future_leg.get('bet_row_id')
+            if bet_id is not None:
+                future_bet_ids.add(int(bet_id))
+    except Exception:
+        # Keep the dashboard usable if the futures query temporarily fails.
+        return set()
+
+    return future_bet_ids
+
+
+def _season_future_dashboard_summary(future_df):
+    if future_df.empty:
+        return {
+            'total_wagered': 0.0,
+            'total_returned': 0.0,
+            'net_pnl': 0.0,
+            'open_exposure': 0.0,
+            'potential_return': 0.0,
+            'active_bets': 0,
+        }
+
+    settled = future_df[future_df['Is Settled']]
+    active = future_df[future_df['Is Active']]
+
+    return {
+        'total_wagered': float(future_df['Wagered'].sum()),
+        'total_returned': float(settled['Returned'].sum()),
+        'net_pnl': float(settled['P/L'].sum()),
+        'open_exposure': float(active['Wagered'].sum()),
+        'potential_return': float(active['Potential Return'].sum()),
+        'active_bets': int(len(active)),
+    }
+
 def _render_dashboard(all_bets):
     bet_df = _dashboard_bet_rows(all_bets)
 
@@ -1977,10 +2017,26 @@ def _render_dashboard(all_bets):
         st.info('No bets have been imported yet.')
         return
 
-    settled_df = bet_df[bet_df['Is Settled']]
-    active_df = bet_df[bet_df['Is Active']]
+    future_bet_ids = _dashboard_future_bet_ids()
 
-    total_wagered = float(bet_df['Wagered'].sum())
+    if future_bet_ids:
+        future_mask = bet_df['Bet ID'].apply(
+            lambda value: (
+                int(value) in future_bet_ids
+                if pd.notna(value)
+                else False
+            )
+        )
+    else:
+        future_mask = pd.Series(False, index=bet_df.index)
+
+    future_df = bet_df[future_mask].copy()
+    performance_df = bet_df[~future_mask].copy()
+
+    settled_df = performance_df[performance_df['Is Settled']]
+    active_df = performance_df[performance_df['Is Active']]
+
+    total_wagered = float(performance_df['Wagered'].sum())
     total_returned = float(settled_df['Returned'].sum())
     settled_wagered = float(settled_df['Wagered'].sum())
     net_pnl = float(settled_df['P/L'].sum())
@@ -2001,6 +2057,7 @@ def _render_dashboard(all_bets):
     )
 
     st.subheader('Performance Overview')
+    st.caption('Season futures are excluded from these totals.')
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric('Total Wagered', _money(total_wagered))
@@ -2014,6 +2071,35 @@ def _render_dashboard(all_bets):
         f"Settled record: {wins}-{losses}"
         + (f"-{pushes} push/void" if pushes else "")
         + f" • Active potential return: {_money(active_potential)}"
+    )
+
+    future_summary = _season_future_dashboard_summary(future_df)
+
+    st.markdown('#### Season Futures')
+    f1, f2, f3, f4, f5, f6 = st.columns(6)
+    f1.metric(
+        'Future Wagered',
+        _money(future_summary['total_wagered']),
+    )
+    f2.metric(
+        'Future Returned',
+        _money(future_summary['total_returned']),
+    )
+    f3.metric(
+        'Future Net P/L',
+        _money(future_summary['net_pnl']),
+    )
+    f4.metric(
+        'Future Exposure',
+        _money(future_summary['open_exposure']),
+    )
+    f5.metric(
+        'Future Potential Return',
+        _money(future_summary['potential_return']),
+    )
+    f6.metric(
+        'Active Futures',
+        future_summary['active_bets'],
     )
 
     exposure = _dashboard_leg_exposure(all_bets)
@@ -2035,21 +2121,21 @@ def _render_dashboard(all_bets):
     with b1:
         st.markdown('**By Sportsbook**')
         _render_summary_dataframe(
-            _summary_breakdown(bet_df, 'Sportsbook'),
+            _summary_breakdown(performance_df, 'Sportsbook'),
             'Sportsbook',
         )
 
     with b2:
         st.markdown('**By Bet Type**')
         _render_summary_dataframe(
-            _summary_breakdown(bet_df, 'Bet Type'),
+            _summary_breakdown(performance_df, 'Bet Type'),
             'Bet Type',
         )
 
     with b3:
         st.markdown('**By Sport**')
         _render_summary_dataframe(
-            _summary_breakdown(bet_df, 'Sport'),
+            _summary_breakdown(performance_df, 'Sport'),
             'Sport',
         )
 
