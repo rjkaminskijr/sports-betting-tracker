@@ -189,7 +189,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 37.6 • Dashboard season futures separated + bonus-bet cash risk + notifications + export/backup + Big Wins')
+st.caption('Version 37.7 • Futures bet-type display + Dashboard season futures separated + bonus-bet cash risk + notifications + export/backup + Big Wins')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -256,6 +256,15 @@ def _bet_description(bet, legs):
     rr_combos = bet.get('round_robin_combinations')
     bet_type = str(bet.get('bet_type') or '').strip().upper()
 
+    if bet_type == 'FUTURES STRAIGHT':
+        market = unique_markets[0] if unique_markets else 'Straight Bet'
+        return f"{sport} Futures {market}"
+
+    if bet_type == 'FUTURES PARLAY':
+        if len(unique_markets) == 1:
+            return f"{sport} Futures {unique_markets[0]} Parlay"
+        return f"{sport} Futures {len(legs)}-Leg Parlay"
+
     if 'TEASER' in bet_type:
         # DraftKings teaser receipts may store the teaser point value in
         # headline/subtitle. Prefer that when available.
@@ -300,6 +309,41 @@ def _bet_description(bet, legs):
         return headline
 
     return f"{sport} Bet"
+
+
+def _is_futures_bet_type(bet):
+    bet_type = str((bet or {}).get('bet_type') or '').strip().upper()
+    return bet_type in {'FUTURES STRAIGHT', 'FUTURES PARLAY'}
+
+
+def _display_bet_type(bet):
+    """Return a clean UI label for the stored parent bet type."""
+    bet_type = str((bet or {}).get('bet_type') or '').strip().upper()
+
+    if (
+        (bet or {}).get('round_robin_size') is not None
+        or (bet or {}).get('round_robin_combinations') is not None
+        or bet_type == 'ROUND_ROBIN'
+        or 'ROUND ROBIN' in bet_type
+    ):
+        return 'Round Robin'
+
+    aliases = {
+        'STRAIGHT': 'Straight',
+        'SINGLE': 'Straight',
+        'PARLAY': 'Parlay',
+        'SGP': 'SGP',
+        'SGPX': 'SGPx',
+        'TEASER': 'Teaser',
+        'FUTURES STRAIGHT': 'Futures Straight',
+        'FUTURES PARLAY': 'Futures Parlay',
+    }
+
+    return aliases.get(
+        bet_type,
+        bet_type.title() if bet_type else 'Other',
+    )
+
 
 
 def _is_bonus_bet(bet):
@@ -363,14 +407,13 @@ def _build_bet_table_rows(bets):
 
         rr_size = bet.get('round_robin_size')
         rr_combos = bet.get('round_robin_combinations')
-        bet_type = str(bet.get('bet_type') or '').strip()
 
         if rr_size:
             type_text = f"Round Robin {rr_size}s"
             if rr_combos:
                 type_text += f" ({rr_combos})"
-        elif bet_type:
-            type_text = bet_type
+        elif bet.get('bet_type'):
+            type_text = _display_bet_type(bet)
         elif len(legs) > 1:
             type_text = 'Parlay'
         else:
@@ -419,7 +462,7 @@ def _render_leg_table(legs, bet=None):
 
     show_leg_odds = not (
         len(legs) == 1 or
-        str((bet or {}).get('bet_type') or '').upper() == 'STRAIGHT'
+        str((bet or {}).get('bet_type') or '').upper() in {'STRAIGHT', 'FUTURES STRAIGHT'}
     )
 
     for leg in legs:
@@ -575,7 +618,7 @@ def _render_bet_metadata(bet, legs):
     detail_rows = {
         'Sportsbook': bet.get('sportsbook') or '',
         'Sportsbook Bet ID': bet.get('sportsbook_bet_id') or '',
-        'Bet Type': bet.get('bet_type') or '',
+        'Bet Type': _display_bet_type(bet),
         'Status': bet.get('status') or 'PENDING',
         'Sport': _display_sport(bet, legs),
         'Leg Count': bet.get('leg_count') or len(legs),
@@ -761,7 +804,7 @@ def _render_bet_expanders(bets, key_prefix, show_schedule_override=False):
                 detail_rows = {
                     'Sportsbook': bet.get('sportsbook') or '',
                     'Sportsbook Bet ID': bet.get('sportsbook_bet_id') or '',
-                    'Bet Type': bet.get('bet_type') or '',
+                    'Bet Type': _display_bet_type(bet),
                     'Status': bet.get('status') or 'PENDING',
                     'Sport': _display_sport(bet, legs),
                     'Leg Count': bet.get('leg_count') or len(legs),
@@ -1004,28 +1047,7 @@ def _dashboard_returned(bet):
 
 
 def _dashboard_bet_type(bet):
-    bet_type = str(bet.get('bet_type') or '').strip().upper()
-
-    if (
-        bet.get('round_robin_size') is not None
-        or bet.get('round_robin_combinations') is not None
-        or bet_type == 'ROUND_ROBIN'
-    ):
-        return 'Round Robin'
-
-    aliases = {
-        'STRAIGHT': 'Straight',
-        'SINGLE': 'Straight',
-        'PARLAY': 'Parlay',
-        'SGP': 'SGP',
-        'SGPX': 'SGPx',
-        'TEASER': 'Teaser',
-    }
-
-    return aliases.get(
-        bet_type,
-        bet_type.title() if bet_type else 'Other',
-    )
+    return _display_bet_type(bet)
 
 
 def _dashboard_sport(bet):
@@ -1857,6 +1879,11 @@ def _dashboard_parlay_progress_rows(all_bets):
                 bet.get('id')
             )
         except (TypeError, ValueError):
+            continue
+
+        # Season futures have their own dashboard summary/tracking view.
+        # Do not mix a Futures Parlay into game-day Parlay Progress.
+        if _is_futures_bet_type(bet):
             continue
 
         legs = list_legs(
@@ -3387,7 +3414,7 @@ def _filter_bets_ui(
     })
 
     bet_types = sorted({
-        str(bet.get('bet_type') or '').strip()
+        _display_bet_type(bet)
         for bet in bets
         if str(bet.get('bet_type') or '').strip()
     })
@@ -3498,9 +3525,7 @@ def _filter_bets_ui(
             continue
 
         if bet_type_filter:
-            if str(
-                bet.get('bet_type') or ''
-            ).strip() not in bet_type_filter:
+            if _display_bet_type(bet) not in bet_type_filter:
                 continue
 
         if status_filter:
