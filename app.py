@@ -192,7 +192,7 @@ with logout_col:
         st.rerun()
 
 st.title('Sports Bet Tracker')
-st.caption('Version 37.7 • Futures bet-type display + Dashboard season futures separated + bonus-bet cash risk + notifications + export/backup + Big Wins')
+st.caption('Version 37.8 • Futures moved to Season Futures tab + clearer settled performance labels + bonus-bet cash risk + notifications + export/backup + Big Wins')
 
 def _money(v): return '' if v is None else f'${float(v):,.2f}'
 def _odds(v): return '' if v is None else f'{int(v):+d}'
@@ -2090,16 +2090,17 @@ def _render_dashboard(all_bets):
     st.caption('Season futures are excluded from these totals.')
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric('Total Wagered', _money(total_wagered))
-    c2.metric('Total Returned', _money(total_returned))
-    c3.metric('Net P/L', _money(net_pnl))
-    c4.metric('ROI', f'{roi:.1f}%')
+    c1.metric('Settled Wagered', _money(settled_wagered))
+    c2.metric('Settled Returned', _money(total_returned))
+    c3.metric('Realized Net P/L', _money(net_pnl))
+    c4.metric('Realized ROI', f'{roi:.1f}%')
     c5.metric('Open Exposure', _money(open_exposure))
     c6.metric('Active Bets', len(active_df))
 
     st.caption(
         f"Settled record: {wins}-{losses}"
         + (f"-{pushes} push/void" if pushes else "")
+        + f" • Total cash placed: {_money(total_wagered)}"
         + f" • Active potential return: {_money(active_potential)}"
     )
 
@@ -4667,7 +4668,15 @@ with tab_dash:
 
 with tab_active:
     st.subheader('Active Bets')
-    rows = list_bets('OPEN')
+
+    # Season futures have their own tab and their own season-stat refresh.
+    # Keep this tab limited to normal game-day/open bets.
+    future_bet_ids = _dashboard_future_bet_ids()
+    rows = [
+        bet
+        for bet in list_bets('OPEN')
+        if int(bet.get('id')) not in future_bet_ids
+    ]
 
     top1, top2 = st.columns([1.2, 4.8])
     do_refresh = top1.button(
@@ -4722,12 +4731,17 @@ with tab_active:
         if last_refresh_at:
             st.caption(f'Last app refresh: {last_refresh_at}')
 
-    rows = list_bets('OPEN')
+    future_bet_ids = _dashboard_future_bet_ids()
+    rows = [
+        bet
+        for bet in list_bets('OPEN')
+        if int(bet.get('id')) not in future_bet_ids
+    ]
 
     if not rows:
         st.info(
-            'No active bets. Settled bets remain in History and are '
-            'not refreshed automatically.'
+            'No active game-day bets. Season futures are shown on the '
+            'Season Futures tab; settled bets remain in History.'
         )
     else:
         st.caption(
@@ -4773,6 +4787,33 @@ with tab_futures:
         'Player matching and season-stat refreshes run through the same '
         'Supabase Edge Functions used by the rest of the tracker.'
     )
+
+    # Show the parent future bets here instead of on Active Bets.
+    future_bet_ids = _dashboard_future_bet_ids()
+    active_future_bets = [
+        bet
+        for bet in list_bets()
+        if (
+            bet.get('id') is not None
+            and int(bet.get('id')) in future_bet_ids
+            and _is_active_status(bet.get('status'))
+        )
+    ]
+
+    st.markdown('#### Active Season Future Bets')
+    if active_future_bets:
+        st.caption(
+            'These bets are excluded from Active Bets and are tracked here '
+            'with their season-long legs.'
+        )
+        _render_bet_expanders(
+            active_future_bets,
+            'season_future_bets',
+            show_schedule_override=False,
+        )
+    else:
+        st.caption('No active season-future bets.')
+
     st.info(
         'Supported markets: Passing Yards, Passing TDs, Interceptions, '
         'Rushing Yards, Rushing TDs, Receiving Yards, Receptions, and '
