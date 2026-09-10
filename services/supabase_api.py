@@ -412,6 +412,51 @@ def update_bet_espn_scope(
     ) or []
 
 
+def update_parent_manual_settlement(bet_id, status, paid):
+    """
+    Manually settle one parent bet using the sportsbook's authoritative
+    final result/payout.
+
+    Intended for cases such as an SGP with VOID/PUSH legs where the
+    original receipt did not include individual leg odds, so the reduced
+    payout cannot be reconstructed reliably.
+
+    This updates only the parent bet. Child-leg statuses are left intact.
+    """
+    normalized = str(status or "").strip().upper()
+
+    aliases = {
+        "VOIDED": "VOID",
+        "CANCELLED": "VOID",
+        "CANCELED": "VOID",
+    }
+    normalized = aliases.get(normalized, normalized)
+
+    allowed = {"WON", "LOST", "PUSH", "VOID"}
+    if normalized not in allowed:
+        raise ValueError(
+            f"Unsupported parent settlement status: {status!r}. "
+            f"Expected one of {sorted(allowed)}."
+        )
+
+    paid_value = float(paid)
+    if paid_value < 0:
+        raise ValueError("Paid amount cannot be negative.")
+
+    return rest_request(
+        "bets",
+        method="PATCH",
+        query={
+            "id": f"eq.{int(bet_id)}",
+        },
+        body={
+            "status": normalized,
+            "paid": paid_value,
+        },
+        prefer="return=representation",
+    ) or []
+
+
 def update_leg_manual_status(leg_id, status):
     """
     Update one leg status directly in Supabase.
