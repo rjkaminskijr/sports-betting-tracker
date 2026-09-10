@@ -16,6 +16,7 @@ from services.supabase_api import (
     list_legs,
     update_bet_espn_scope,
     update_leg_manual_status,
+    update_parent_manual_settlement,
     list_player_void_candidates,
     void_player_everywhere,
     set_big_win_hidden,
@@ -5058,6 +5059,122 @@ with tab_history:
                         st.rerun()
                 except Exception as e:
                     st.error(f'Recheck failed: {e}')
+
+        st.markdown('#### Manual parent settlement override')
+        st.caption(
+            'Use this when the sportsbook has already settled the entire bet but the tracker '
+            'cannot calculate the final parent payout automatically (for example, an SGP with '
+            'VOID/PUSH legs and no stored individual leg odds). The sportsbook result and paid '
+            'amount are treated as authoritative; child-leg statuses are not changed.'
+        )
+
+        parent_settlement_options = {
+            (
+                f"Bet {b['id']} • {b.get('sportsbook') or ''} • "
+                f"{b.get('headline') or b.get('sportsbook_bet_id') or ''} • "
+                f"{b.get('status') or 'PENDING'}"
+            ): b
+            for b in rows
+        }
+
+        parent_settlement_label = st.selectbox(
+            'Bet for parent settlement override',
+            list(parent_settlement_options.keys()),
+            key='manual_parent_settlement_bet',
+        )
+        parent_settlement_bet = parent_settlement_options[parent_settlement_label]
+
+        current_parent_status = str(
+            parent_settlement_bet.get('status') or 'PENDING'
+        ).strip().upper()
+        current_parent_paid = _safe_float(parent_settlement_bet.get('paid'))
+        parent_stake = _safe_float(parent_settlement_bet.get('stake')) or 0.0
+
+        settlement_status_choices = ['WON', 'LOST', 'PUSH', 'VOID']
+        default_status_index = (
+            settlement_status_choices.index(current_parent_status)
+            if current_parent_status in settlement_status_choices
+            else 0
+        )
+
+        manual_parent_status = st.selectbox(
+            'Final sportsbook status',
+            settlement_status_choices,
+            index=default_status_index,
+            key='manual_parent_settlement_status',
+        )
+
+        if current_parent_paid is not None:
+            default_paid = current_parent_paid
+        elif manual_parent_status == 'LOST':
+            default_paid = 0.0
+        elif manual_parent_status in {'PUSH', 'VOID'}:
+            default_paid = parent_stake
+        else:
+            default_paid = 0.0
+
+        manual_parent_paid = st.number_input(
+            'Actual amount paid / returned by sportsbook',
+            min_value=0.0,
+            value=float(default_paid),
+            step=0.01,
+            format='%.2f',
+            key='manual_parent_settlement_paid',
+            help=(
+                'Enter the final amount returned by the sportsbook, not the original To Pay. '
+                'For a loss this is normally $0.00; for a void/push this is normally the '
+                'returned stake; for a reduced SGP payout enter the sportsbook\'s final payout.'
+            ),
+        )
+
+        preview_cash_at_risk = _cash_at_risk(parent_settlement_bet)
+        if manual_parent_status == 'LOST':
+            preview_pnl = -preview_cash_at_risk
+        elif manual_parent_status in {'PUSH', 'VOID'}:
+            preview_pnl = 0.0
+        else:
+            preview_pnl = manual_parent_paid - preview_cash_at_risk
+
+        st.caption(
+            f"Preview: Bet {parent_settlement_bet['id']} → {manual_parent_status} • "
+            f"Paid ${manual_parent_paid:,.2f} • P/L ${preview_pnl:,.2f}"
+        )
+
+        confirm_parent_settlement = st.checkbox(
+            'I confirm this matches the sportsbook final settlement.',
+            key='confirm_manual_parent_settlement',
+        )
+
+        if st.button(
+            'Apply parent settlement override',
+            key='apply_manual_parent_settlement',
+        ):
+            if not confirm_parent_settlement:
+                st.warning(
+                    'Check the confirmation box before overriding the parent settlement.'
+                )
+            else:
+                try:
+                    with st.spinner('Saving sportsbook parent settlement...'):
+                        updated_parent = update_parent_manual_settlement(
+                            parent_settlement_bet['id'],
+                            manual_parent_status,
+                            manual_parent_paid,
+                        )
+
+                    if not updated_parent:
+                        raise RuntimeError(
+                            'Supabase did not return the updated parent bet.'
+                        )
+
+                    st.success(
+                        f"Bet {parent_settlement_bet['id']} settled as "
+                        f"{manual_parent_status} with ${manual_parent_paid:,.2f} paid."
+                    )
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f'Parent settlement override failed: {e}')
 
         st.markdown('#### Manual VOID override')
         st.caption('Use this only when the sportsbook explicitly voids a leg. The leg and parent are recalculated immediately without asking ESPN to regrade the manual VOID.')
