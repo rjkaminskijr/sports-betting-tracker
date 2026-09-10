@@ -439,6 +439,98 @@ def update_leg_manual_status(leg_id, status):
 
 
 
+
+def list_player_void_candidates():
+    """
+    Return every bet leg that has an ESPN athlete ID so the UI can group
+    all occurrences of the same player across every parent bet.
+    """
+    return rest_request(
+        "bet_legs",
+        query={
+            "select": "id,bet_row_id,selection,market,status,espn_athlete_id,sportsbook,placed_at",
+            "espn_athlete_id": "not.is.null",
+            "order": "selection.asc.nullslast,id.asc",
+        },
+        timeout=120,
+    ) or []
+
+
+def void_player_everywhere(espn_athlete_id):
+    """
+    Mark every leg tied to one ESPN athlete ID VOID, regardless of parent bet,
+    then recalculate each affected parent / Round Robin from the stored VOID
+    statuses without asking ESPN to regrade the player.
+    """
+    athlete_id = str(espn_athlete_id or "").strip()
+    if not athlete_id:
+        raise ValueError("ESPN athlete ID is required.")
+
+    legs = rest_request(
+        "bet_legs",
+        query={
+            "select": "id,bet_row_id,selection,market,status,espn_athlete_id",
+            "espn_athlete_id": f"eq.{athlete_id}",
+            "order": "bet_row_id.asc,id.asc",
+        },
+        timeout=120,
+    ) or []
+
+    if not legs:
+        return {
+            "ok": True,
+            "espn_athlete_id": athlete_id,
+            "legs_found": 0,
+            "legs_voided": 0,
+            "parents_recalculated": 0,
+            "settlements": [],
+        }
+
+    changed = rest_request(
+        "bet_legs",
+        method="PATCH",
+        query={
+            "espn_athlete_id": f"eq.{athlete_id}",
+        },
+        body={
+            "status": "VOID",
+        },
+        prefer="return=representation",
+        timeout=120,
+    ) or []
+
+    # Recalculate each distinct parent once. Any leg from that parent is enough
+    # for settlement_only_leg_id to locate and recompute the parent.
+    representative_leg_by_parent = {}
+    for leg in legs:
+        parent_id = leg.get("bet_row_id")
+        leg_id = leg.get("id")
+        if parent_id is None or leg_id is None:
+            continue
+        representative_leg_by_parent.setdefault(int(parent_id), int(leg_id))
+
+    settlements = []
+    for parent_id, leg_id in representative_leg_by_parent.items():
+        result = recalculate_parent_from_manual_leg(leg_id) or {}
+        settlements.append({
+            "bet_row_id": parent_id,
+            "leg_id": leg_id,
+            "result": result,
+        })
+        if not result.get("ok", True):
+            raise RuntimeError(
+                f"Player VOID applied, but parent bet {parent_id} recalculation failed: {result}"
+            )
+
+    return {
+        "ok": True,
+        "espn_athlete_id": athlete_id,
+        "legs_found": len(legs),
+        "legs_voided": len(changed),
+        "parents_recalculated": len(representative_leg_by_parent),
+        "settlements": settlements,
+    }
+
 def list_all_table_rows(
     table,
     order="id.asc",
