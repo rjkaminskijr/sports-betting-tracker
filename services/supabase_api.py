@@ -448,7 +448,7 @@ def list_player_void_candidates():
     return rest_request(
         "bet_legs",
         query={
-            "select": "id,bet_row_id,selection,market,status,espn_athlete_id,sportsbook,placed_at",
+            "select": "id,bet_row_id,selection,market,status,espn_athlete_id",
             "espn_athlete_id": "not.is.null",
             "order": "selection.asc.nullslast,id.asc",
         },
