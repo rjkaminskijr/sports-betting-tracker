@@ -3594,8 +3594,8 @@ def _filter_active_legs_rows_ui(
 
     st.markdown('#### Filters')
 
-    c1, c2, c3, c4 = st.columns(
-        [2.3, 1.2, 1.0, 1.4]
+    c1, c2, c3, c4, c5 = st.columns(
+        [2.3, 1.2, 1.0, 1.8, 1.4]
     )
 
     search_text = c1.text_input(
@@ -3613,6 +3613,12 @@ def _filter_active_legs_rows_ui(
     sports = sorted(
         x
         for x in df['Sport'].dropna().unique().tolist()
+        if str(x).strip()
+    )
+
+    games = sorted(
+        x
+        for x in df['Game'].dropna().unique().tolist()
         if str(x).strip()
     )
 
@@ -3634,7 +3640,13 @@ def _filter_active_legs_rows_ui(
         key=f'{key_prefix}_sport',
     )
 
-    market_filter = c4.multiselect(
+    game_filter = c4.multiselect(
+        'Game',
+        games,
+        key=f'{key_prefix}_game',
+    )
+
+    market_filter = c5.multiselect(
         'Market',
         markets,
         key=f'{key_prefix}_market',
@@ -3653,6 +3665,13 @@ def _filter_active_legs_rows_ui(
         filtered = filtered[
             filtered['Sport'].isin(
                 sport_filter
+            )
+        ]
+
+    if game_filter:
+        filtered = filtered[
+            filtered['Game'].isin(
+                game_filter
             )
         ]
 
