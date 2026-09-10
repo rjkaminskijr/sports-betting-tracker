@@ -16,6 +16,8 @@ from services.supabase_api import (
     list_legs,
     update_bet_espn_scope,
     update_leg_manual_status,
+    list_player_void_candidates,
+    void_player_everywhere,
     set_big_win_hidden,
     export_backup_tables,
     get_notification_settings,
@@ -5095,6 +5097,103 @@ with tab_history:
 
                 except Exception as e:
                     st.error(f'VOID update failed: {e}')
+
+        st.markdown('#### Player VOID override')
+        st.caption(
+            'Use this when the sportsbook voids a player entirely. This marks every leg tied '
+            'to that ESPN athlete ID as VOID across all bets, then recalculates every affected parent bet.'
+        )
+
+        try:
+            player_void_rows = list_player_void_candidates()
+        except Exception as e:
+            player_void_rows = []
+            st.error(f'Unable to load player VOID candidates: {e}')
+
+        if player_void_rows:
+            by_player = {}
+            for lg in player_void_rows:
+                athlete_id = str(lg.get('espn_athlete_id') or '').strip()
+                if not athlete_id:
+                    continue
+                by_player.setdefault(athlete_id, []).append(lg)
+
+            player_labels = {}
+            for athlete_id, player_legs in by_player.items():
+                names = [
+                    str(x.get('selection') or '').strip()
+                    for x in player_legs
+                    if str(x.get('selection') or '').strip()
+                ]
+                display_name = names[0] if names else f'ESPN athlete {athlete_id}'
+                bet_count = len({x.get('bet_row_id') for x in player_legs if x.get('bet_row_id') is not None})
+                player_labels[
+                    f"{display_name} • {len(player_legs)} leg(s) across {bet_count} bet(s) • ESPN {athlete_id}"
+                ] = athlete_id
+
+            selected_player_label = st.selectbox(
+                'Player to VOID everywhere',
+                sorted(player_labels.keys()),
+                key='void_player_everywhere_player',
+            )
+            selected_athlete_id = player_labels[selected_player_label]
+            selected_player_legs = by_player[selected_athlete_id]
+            affected_bets = sorted({
+                int(x['bet_row_id'])
+                for x in selected_player_legs
+                if x.get('bet_row_id') is not None
+            })
+
+            st.caption(
+                f"This will VOID {len(selected_player_legs)} leg(s) across "
+                f"{len(affected_bets)} parent bet(s): "
+                + ', '.join(f'Bet {bet_id}' for bet_id in affected_bets)
+            )
+
+            preview_rows = [
+                {
+                    'Bet': x.get('bet_row_id'),
+                    'Leg': x.get('id'),
+                    'Selection': x.get('selection'),
+                    'Market': x.get('market'),
+                    'Current Status': x.get('status') or 'PENDING',
+                }
+                for x in selected_player_legs
+            ]
+            st.dataframe(
+                pd.DataFrame(preview_rows),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            confirm_player_void = st.checkbox(
+                'I confirm this player should be VOID on every bet listed above.',
+                key='confirm_void_player_everywhere',
+            )
+
+            if st.button('VOID player across all bets'):
+                if not confirm_player_void:
+                    st.warning('Check the confirmation box before applying a player-wide VOID.')
+                else:
+                    try:
+                        with st.spinner('Voiding player legs and recalculating affected bets...'):
+                            result = void_player_everywhere(selected_athlete_id)
+
+                        if not result or not result.get('ok'):
+                            raise RuntimeError(
+                                (result or {}).get('error')
+                                or 'Player VOID did not complete successfully.'
+                            )
+
+                        st.success(
+                            f"Player VOID complete: {result.get('legs_voided', 0)} leg(s) updated "
+                            f"across {result.get('parents_recalculated', 0)} bet(s)."
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f'Player VOID failed: {e}')
+        else:
+            st.info('No player-linked legs with ESPN athlete IDs are available for player-wide VOID.')
     else:
         st.info('No bets saved yet.')
 
