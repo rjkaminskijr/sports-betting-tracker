@@ -133,3 +133,10 @@ Active Bets now includes a parent-level Cash Out action. Enter the actual sports
 - Read-only page loads retry one transient network/Supabase gateway failure before showing an error.
 - 502/503/504 load failures now show a friendly temporary-connection message instead of raw Supabase gateway text.
 - Added `BET_UPLOAD_TOKEN` to `.env.example`; real secrets remain in `.env.local`, which is git-ignored.
+
+
+## v6.9 dashboard Vercel fix
+
+- Dashboard now queries Supabase directly from the server instead of calling its own `/api/bets` and `/api/futures` routes through `VERCEL_URL`.
+- Dashboard is forced dynamic so production requests read current Supabase data instead of risking a zero-value prerender.
+- Other pages/routes are unchanged.

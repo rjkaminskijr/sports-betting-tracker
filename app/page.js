@@ -1,3 +1,7 @@
+import { supabaseRest } from "../lib/supabase-server";
+
+export const dynamic = "force-dynamic";
+
 const ACTIVE_STATUSES = new Set(["PENDING", "OPEN", "LIVE", "IN_PROGRESS"]);
 const SETTLED_STATUSES = new Set([
   "WON",
@@ -11,29 +15,55 @@ const SETTLED_STATUSES = new Set([
 ]);
 const NEUTRAL_STATUSES = new Set(["PUSH", "VOID", "VOIDED", "CANCELLED", "CANCELED"]);
 
-function appBaseUrl() {
-  return process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : "http://localhost:3000";
-}
-
 async function getDashboardData() {
-  const base = appBaseUrl();
-
   try {
-    const [betsRes, futuresRes] = await Promise.all([
-      fetch(`${base}/api/bets?limit=1000`, { cache: "no-store" }),
-      fetch(`${base}/api/futures`, { cache: "no-store" })
+    const [bets, futureLegRows] = await Promise.all([
+      supabaseRest("bets", {
+        searchParams: {
+          select: [
+            "id",
+            "sportsbook",
+            "bet_type",
+            "status",
+            "stake",
+            "to_pay",
+            "paid",
+            "promo",
+            "placed_at",
+            "source_captured_at",
+            "sport",
+            "headline",
+            "subtitle",
+            "event_name",
+            "current_odds",
+            "boosted_odds",
+            "original_odds",
+            "leg_count"
+          ].join(","),
+          order: "placed_at.desc",
+          limit: 1000
+        }
+      }),
+      supabaseRest("bet_legs", {
+        searchParams: {
+          select: "bet_row_id",
+          tracking_scope: "eq.SEASON",
+          order: "bet_row_id.asc",
+          limit: 1000
+        }
+      })
     ]);
 
-    const betsData = betsRes.ok ? await betsRes.json() : { rows: [] };
-    const futuresData = futuresRes.ok ? await futuresRes.json() : { betIds: [] };
-
     return {
-      bets: betsData.rows || [],
-      futureBetIds: new Set((futuresData.betIds || []).map(Number))
+      bets: bets || [],
+      futureBetIds: new Set(
+        (futureLegRows || [])
+          .map((row) => Number(row.bet_row_id))
+          .filter((id) => Number.isFinite(id))
+      )
     };
-  } catch {
+  } catch (error) {
+    console.error("Dashboard Supabase load failed:", error);
     return { bets: [], futureBetIds: new Set() };
   }
 }
