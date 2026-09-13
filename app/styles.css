@@ -1,0 +1,463 @@
+:root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#090d12; color:#f5f7fa; }
+* { box-sizing:border-box; }
+body { margin:0; background:linear-gradient(180deg,#0e141b 0,#090d12 45%); min-height:100vh; }
+a { color:inherit; text-decoration:none; }
+button { border:1px solid #344152; background:#151d27; color:#fff; border-radius:12px; padding:10px 14px; font-weight:700; }
+.shell { max-width:760px; margin:0 auto; padding:24px 16px calc(138px + env(safe-area-inset-bottom, 0px)); }
+.header { display:flex; justify-content:space-between; gap:16px; align-items:center; margin-bottom:22px; }
+h1 { font-size:28px; margin:3px 0 0; letter-spacing:-.03em; }
+h2 { font-size:17px; margin:0; }
+.eyebrow,.muted,small { color:#8fa0b3; font-size:12px; }
+.liveDot { font-size:12px; border:1px solid #2b3f50; padding:7px 10px; border-radius:999px; color:#b7c7d8; }
+.metricGrid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-bottom:14px; }
+.metric,.panel,.betCard,.legCard { background:rgba(20,27,36,.88); border:1px solid #202c39; box-shadow:0 8px 30px rgba(0,0,0,.12); }
+.metric { border-radius:16px; padding:15px; }
+.metric span { color:#92a2b3; font-size:12px; display:block; margin-bottom:5px; }
+.metric strong { font-size:21px; }
+.panel { border-radius:18px; padding:16px; margin:12px 0; }
+.panel p { line-height:1.45; color:#b8c3cf; }
+.panelTitle { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+.panelTitle span { background:#202c39; border-radius:999px; padding:3px 8px; font-size:12px; }
+.cardList { display:grid; gap:10px; }
+.betCard { border-radius:16px; overflow:hidden; }
+.betCard summary { list-style:none; cursor:pointer; display:flex; justify-content:space-between; gap:14px; padding:15px; }
+.betCard summary::-webkit-details-marker { display:none; }
+.betCard summary > div:first-child { display:grid; gap:4px; min-width:0; }
+.amount { text-align:right; display:grid; gap:4px; flex:0 0 auto; }
+.betBody { border-top:1px solid #202c39; padding:12px 15px 15px; }
+.chips { display:flex; gap:8px; flex-wrap:wrap; }
+.chips span { font-size:11px; border:1px solid #314052; color:#b8c8d9; padding:5px 8px; border-radius:999px; }
+.legCard { display:flex; justify-content:space-between; gap:14px; padding:12px; border-radius:13px; margin-top:8px; }
+.legCard > div { display:grid; gap:3px; }
+.legRight { text-align:right; }
+.error,.empty,.skeleton { padding:16px; border-radius:14px; background:#171f29; border:1px solid #2a3746; margin:12px 0; }
+.error { border-color:#6a2e37; }
+.bottomNav { position:fixed; left:50%; bottom:calc(10px + env(safe-area-inset-bottom, 0px)); transform:translateX(-50%); width:min(calc(100% - 24px),520px); display:grid; grid-template-columns:repeat(5,1fr); background:rgba(16,22,30,.96); backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px); border:1px solid #273544; border-radius:18px; padding:7px; box-shadow:0 14px 40px rgba(0,0,0,.35); z-index:20; }
+.bottomNav a { text-align:center; min-height:44px; display:flex; align-items:center; justify-content:center; padding:9px 8px; border-radius:12px; font-weight:700; font-size:13px; }
+.bottomNav a:hover { background:#202b38; }
+@media (min-width:650px) { .metricGrid { grid-template-columns:repeat(4,1fr); } }
+
+/* Dashboard v38 parity */
+.dashboardNote { margin:0 0 12px; }
+.dashboardCaption { margin:10px 0 0 !important; font-size:12px; color:#8fa0b3 !important; }
+.dashboardMetrics { margin-bottom:0; }
+@media (min-width:650px) {
+  .dashboardMetrics { grid-template-columns:repeat(3,1fr); }
+}
+
+/* Active Bets v38 parity + mobile-first interaction */
+.activeHeader { margin-bottom:14px; }
+.refreshButton:disabled { opacity:.55; cursor:not-allowed; }
+.activeSummaryGrid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:6px; }
+.activeSummaryGrid > div { background:rgba(20,27,36,.88); border:1px solid #202c39; border-radius:14px; padding:12px; min-width:0; }
+.activeSummaryGrid span { display:block; color:#8fa0b3; font-size:11px; margin-bottom:4px; }
+.activeSummaryGrid strong { font-size:18px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:block; }
+.lastUpdated { color:#718396; font-size:11px; margin:6px 2px 14px; }
+.filterPanel { background:rgba(20,27,36,.68); border:1px solid #202c39; border-radius:16px; padding:14px; margin:0 0 14px; }
+.filterTopLine { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+.filterTopLine h2 { font-size:15px; }
+.textButton { border:0; background:transparent; color:#9fc9ef; padding:3px 4px; font-size:12px; }
+.filterGrid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.filterGrid label { display:grid; gap:5px; color:#8fa0b3; font-size:11px; min-width:0; }
+.filterGrid .searchField { grid-column:1 / -1; }
+.filterGrid input,.filterGrid select { width:100%; min-width:0; background:#0d141c; color:#f5f7fa; border:1px solid #2a3949; border-radius:10px; padding:10px; outline:none; font:inherit; font-size:13px; }
+.filterGrid input:focus,.filterGrid select:focus { border-color:#597a9b; }
+.activeBetList { gap:9px; }
+.activeBetCard summary { align-items:flex-start; padding:14px; }
+.betSummaryMain { display:grid; gap:6px; min-width:0; }
+.betTitleLine { display:flex; align-items:flex-start; gap:7px; min-width:0; }
+.betTitleLine strong { overflow-wrap:anywhere; }
+.warningIcon { color:#f8c45d; flex:0 0 auto; }
+.betSummaryMeta { display:flex; flex-wrap:wrap; gap:7px; align-items:center; color:#91a1b2; font-size:11px; }
+.statusPill { display:inline-flex; align-items:center; border:1px solid #3b4c5f; border-radius:999px; padding:3px 7px; font-size:10px; line-height:1; color:#c5d1dc; white-space:nowrap; }
+.status-live,.status-in-progress { border-color:#236e50; color:#8ce5b7; background:rgba(27,105,73,.16); }
+.status-won { border-color:#236e50; color:#8ce5b7; }
+.status-lost { border-color:#753541; color:#ff9baa; }
+.betSummaryAmount { min-width:72px; }
+.betSummaryAmount > strong { font-size:16px; }
+.expandHint { color:#63798e; font-size:18px; line-height:.7; }
+.activeBetCard[open] .expandHint { transform:rotate(180deg); }
+.activeBetBody { padding:14px; }
+.betMetricGrid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:7px; margin-bottom:10px; }
+.betMetricGrid > div { background:#0e151d; border:1px solid #202c39; border-radius:11px; padding:9px; min-width:0; }
+.betMetricGrid span { color:#8092a4; font-size:10px; display:block; margin-bottom:3px; }
+.betMetricGrid strong { font-size:13px; overflow:hidden; text-overflow:ellipsis; display:block; }
+.betCaption { color:#8fa0b3; font-size:11px; margin:5px 0 12px; }
+.issueBox { background:rgba(130,84,22,.13); border:1px solid #5d4726; color:#e8c987; padding:9px 10px; border-radius:10px; font-size:11px; margin:0 0 12px; }
+.sectionLabel { font-weight:800; font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:#aebdcb; margin:12px 0 7px; }
+.legList { display:grid; gap:7px; }
+.activeLegRow { display:grid; grid-template-columns:25px minmax(0,1fr) auto; gap:9px; align-items:start; background:#0e151d; border:1px solid #202c39; border-radius:12px; padding:10px; }
+.legIndex { width:25px; height:25px; display:grid; place-items:center; border-radius:999px; background:#1c2835; color:#9eb0c2; font-size:10px; font-weight:800; }
+.activeLegMain { display:grid; gap:3px; min-width:0; }
+.activeLegMain strong { font-size:13px; overflow-wrap:anywhere; }
+.activeLegMain small { color:#7f92a4; font-size:10px; }
+.activeLegMain span { color:#aebdcb; font-size:11px; overflow-wrap:anywhere; }
+.activeLegState { text-align:right; display:grid; justify-items:end; gap:3px; min-width:60px; }
+.activeLegState strong { font-size:13px; }
+.activeLegState small { color:#7f92a4; font-size:10px; }
+.innerDetails { margin-top:12px; border-top:1px solid #202c39; padding-top:9px; }
+.innerDetails > summary { padding:4px 0; font-size:12px; font-weight:700; color:#9fc0de; display:block; }
+.detailsGrid { display:grid; grid-template-columns:minmax(110px,.8fr) 1.2fr; gap:8px 12px; padding-top:10px; font-size:11px; }
+.detailsGrid span { color:#7f92a4; }
+.detailsGrid strong { overflow-wrap:anywhere; font-weight:600; }
+.emptyInline { color:#7f92a4; font-size:12px; padding:8px 0; }
+
+@media (max-width:520px) {
+  .activeSummaryGrid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .activeSummaryGrid > div { padding:10px 8px; }
+  .activeSummaryGrid strong { font-size:15px; }
+  .betMetricGrid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .betMetricGrid > div:nth-child(4), .betMetricGrid > div:nth-child(5) { grid-column:span 1; }
+  .activeLegRow { grid-template-columns:22px minmax(0,1fr); }
+  .legIndex { width:22px; height:22px; }
+  .activeLegState { grid-column:2; grid-row:2; display:flex; flex-wrap:wrap; justify-content:flex-start; align-items:center; gap:6px; text-align:left; }
+}
+
+@media (min-width:700px) {
+  .filterGrid { grid-template-columns:2.1fr repeat(4,1fr); }
+  .filterGrid .searchField { grid-column:auto; }
+  .filterGrid label:nth-last-child(2), .filterGrid label:last-child { grid-column:span 1; }
+}
+
+/* Active Bets polish pass */
+.gameSummaryLine { display:flex; flex-wrap:wrap; gap:4px 9px; align-items:baseline; color:#c6d3df; font-size:12px; }
+.gameSummaryLine > span { font-weight:650; }
+.gameSummaryLine small { color:#8194a7; }
+.liveBadge { display:inline-flex; align-items:center; justify-content:center; border:1px solid #257755; background:rgba(29,118,81,.18); color:#8ce5b7; border-radius:999px; padding:3px 7px; font-size:9px; line-height:1; font-weight:900; letter-spacing:.06em; }
+.hasLiveBet { border-color:#285640; box-shadow:0 0 0 1px rgba(52,151,103,.08),0 8px 30px rgba(0,0,0,.14); }
+.payoutLine { color:#88a9c4 !important; white-space:nowrap; }
+.legStatusIcon { width:25px; height:25px; display:grid; place-items:center; border-radius:999px; font-size:12px; font-weight:900; border:1px solid #344557; background:#1a2632; color:#96a9ba; }
+.legStatusIcon-won { border-color:#267353; color:#8ce5b7; background:rgba(31,116,80,.17); }
+.legStatusIcon-lost { border-color:#7d3945; color:#ff9baa; background:rgba(128,48,62,.16); }
+.legStatusIcon-live { border-color:#267353; color:#8ce5b7; background:rgba(31,116,80,.17); }
+.legStatusIcon-neutral { border-color:#596777; color:#bac5cf; }
+.legStatusIcon-pending { color:#7f94a7; }
+.legStateText { font-size:10px; font-weight:800; letter-spacing:.03em; }
+.legState-won,.legState-live { color:#8ce5b7; }
+.legState-lost { color:#ff9baa; }
+.legState-neutral { color:#bdc7d0; }
+.legState-pending { color:#7e92a5; }
+.legTone-won { border-color:#254b3d; }
+.legTone-lost { border-color:#57313a; }
+.legTone-live { border-color:#285540; background:rgba(13,30,24,.68); }
+.mobileFilterBar { display:none; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; }
+.mobileFilterButton { padding:9px 13px; font-size:12px; }
+
+@media (max-width:620px) {
+  .mobileFilterBar { display:flex; }
+  .filterPanel { display:none; }
+  .filterPanel.filtersOpen { display:block; }
+  .filterTopLine { display:none; }
+  .filterGrid { grid-template-columns:1fr 1fr; }
+  .filterGrid .searchField { grid-column:1 / -1; }
+  .activeBetCard summary { gap:9px; }
+  .betSummaryAmount { min-width:84px; }
+  .betSummaryAmount > strong { font-size:15px; }
+  .payoutLine { font-size:10px; max-width:95px; overflow:hidden; text-overflow:ellipsis; }
+  .gameSummaryLine { display:grid; gap:2px; }
+}
+
+@media (min-width:621px) {
+  .filterPanel { display:block !important; }
+}
+
+/* Active Legs game-day view */
+.legsSummaryGrid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-bottom:6px; }
+.legsSummaryGrid > div { background:rgba(20,27,36,.88); border:1px solid #202c39; border-radius:14px; padding:12px; min-width:0; }
+.legsSummaryGrid span { display:block; color:#8fa0b3; font-size:11px; margin-bottom:4px; }
+.legsSummaryGrid strong { font-size:18px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:block; }
+.legsFilterGrid { display:grid; grid-template-columns:2fr repeat(4,1fr); gap:10px; }
+.legsFilterGrid label { display:grid; gap:5px; color:#8fa0b3; font-size:11px; min-width:0; }
+.legsFilterGrid input,.legsFilterGrid select { width:100%; min-width:0; background:#0d141c; color:#f5f7fa; border:1px solid #2a3949; border-radius:10px; padding:10px; outline:none; font:inherit; font-size:13px; }
+.gameGroupList { display:grid; gap:14px; }
+.gameGroup { background:rgba(20,27,36,.72); border:1px solid #202c39; border-radius:18px; padding:14px; }
+.liveGameGroup { border-color:#285c43; box-shadow:0 0 0 1px rgba(52,151,103,.07),0 8px 30px rgba(0,0,0,.12); }
+.gameGroupHeader { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:10px; }
+.gameGroupHeader > div:first-child { min-width:0; }
+.gameGroupTitleLine { display:flex; flex-wrap:wrap; align-items:center; gap:7px; }
+.gameGroupTitleLine > span:first-child { color:#8fa0b3; font-size:10px; font-weight:800; letter-spacing:.05em; }
+.gameGroupTitleLine h2 { font-size:16px; line-height:1.25; overflow-wrap:anywhere; }
+.gameGroupHeader small { display:block; color:#8295a8; margin-top:4px; font-size:11px; }
+.gameLegCount { background:#202c39; color:#c3d0dc; border-radius:999px; padding:4px 8px; font-size:10px; white-space:nowrap; }
+.gameLegList { display:grid; gap:7px; }
+.gameLegCard { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:center; background:#0e151d; border:1px solid #202c39; border-radius:12px; padding:11px; }
+.gameLegLive { border-color:#285540; background:rgba(13,30,24,.68); }
+.gameLegMain { display:grid; gap:3px; min-width:0; }
+.gameLegTitleLine { display:flex; align-items:center; gap:7px; min-width:0; }
+.gameLegTitleLine strong { font-size:13px; overflow-wrap:anywhere; }
+.countBadge { color:#b9c8d6; background:#24313e; border-radius:999px; padding:2px 6px; font-size:9px; font-weight:800; flex:0 0 auto; }
+.gameLegMain > span { color:#aebdcb; font-size:11px; overflow-wrap:anywhere; }
+.gameLegMain > small { color:#778b9e; font-size:10px; overflow-wrap:anywhere; }
+.gameLegValue { min-width:70px; display:grid; justify-items:end; gap:4px; text-align:right; }
+.gameLegValue strong { font-size:17px; }
+.legsFootnote { color:#75899c; font-size:11px; margin:14px 2px 0; }
+
+@media (max-width:700px) {
+  .legsSummaryGrid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .legsFilterGrid { grid-template-columns:1fr 1fr; }
+  .legsFilterGrid .searchField { grid-column:1 / -1; }
+}
+
+@media (max-width:480px) {
+  .gameGroup { padding:11px; }
+  .gameGroupHeader { display:grid; grid-template-columns:minmax(0,1fr) auto; }
+  .gameLegCard { padding:10px; gap:8px; }
+  .gameLegValue { min-width:54px; }
+  .gameLegValue strong { font-size:15px; }
+}
+
+/* Active Legs polish: collapsible matchup groups + compact duplicate details */
+.gameGroupToggle { width:100%; background:none; border:0; color:inherit; padding:0; text-align:left; cursor:pointer; font:inherit; }
+.gameGroupToggle:hover .gameGroupTitleLine h2 { color:#dceaf7; }
+.gameGroupHeaderRight { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+.gameChevron { color:#7990a4; font-size:20px; line-height:1; transition:transform .16s ease; }
+.gameChevronOpen { transform:rotate(180deg); }
+.duplicateDetails { margin-top:2px; width:max-content; max-width:100%; }
+.duplicateDetails > summary { list-style:none; color:#7f99ae; font-size:10px; cursor:pointer; padding:1px 0; }
+.duplicateDetails > summary::-webkit-details-marker { display:none; }
+.duplicateDetails > div { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+.duplicateDetails span { display:inline-flex; padding:2px 6px; border-radius:999px; background:#1d2935; color:#9eb2c5; font-size:9px; }
+
+@media (max-width:620px) {
+  .gameGroupHeaderRight { align-self:start; }
+  .gameGroupTitleLine h2 { font-size:15px; }
+}
+
+/* Active Legs v4.2 controls + live scoreboard readout */
+.gameViewControls { display:flex; justify-content:flex-end; align-items:center; gap:7px; margin:2px 2px 10px; color:#6f8295; font-size:11px; }
+.gameLiveReadout { color:#77e2ae; font-weight:800; font-size:12px; margin-top:6px; letter-spacing:.01em; }
+@media (max-width: 720px) {
+  .gameViewControls { justify-content:flex-start; margin:4px 2px 9px; }
+  .gameLiveReadout { font-size:11px; }
+}
+
+/* Season Futures */
+.futuresSummaryGrid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-bottom:14px; }
+.futuresSummaryGrid > div { background:rgba(20,27,36,.88); border:1px solid #202c39; border-radius:14px; padding:12px; min-width:0; }
+.futuresSummaryGrid span { color:#8fa0b3; font-size:11px; display:block; margin-bottom:4px; }
+.futuresSummaryGrid strong { font-size:18px; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.successBox { padding:11px 13px; border-radius:12px; margin:10px 0; color:#99e9bd; background:rgba(30,111,78,.17); border:1px solid #285b44; font-size:12px; }
+.futureAddPanel { margin-top:14px; }
+.futureIntro { margin:4px 0 0 !important; font-size:11px !important; }
+.secondaryButton { background:#111922; border-color:#2d3c4c; font-size:11px; padding:8px 10px; }
+.futureForm { display:grid; gap:12px; padding-top:4px; }
+.futureCandidateField,.futureConfigGrid label { display:grid; gap:5px; color:#8fa0b3; font-size:11px; }
+.futureForm select,.futureForm input { width:100%; min-width:0; background:#0d141c; color:#f5f7fa; border:1px solid #2a3949; border-radius:10px; padding:10px; outline:none; font:inherit; font-size:13px; }
+.futureConfigGrid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)) auto; gap:9px; align-items:end; }
+.futureTrackButton { height:39px; white-space:nowrap; }
+.futureSectionHeader { display:flex; justify-content:space-between; align-items:center; gap:10px; margin:18px 2px 9px; }
+.futureSectionHeader > span { color:#90a3b5; background:#18232e; padding:4px 8px; border-radius:999px; font-size:10px; }
+.futureList { display:grid; gap:11px; }
+.futureCard { background:rgba(20,27,36,.88); border:1px solid #202c39; border-radius:16px; padding:14px; box-shadow:0 8px 30px rgba(0,0,0,.11); }
+.futureCardHead { display:flex; justify-content:space-between; gap:14px; align-items:flex-start; }
+.futureCardHead > div:first-child { min-width:0; display:grid; gap:4px; }
+.futureTitleLine { display:flex; flex-wrap:wrap; align-items:center; gap:7px; }
+.futureTitleLine h2 { font-size:16px; overflow-wrap:anywhere; }
+.futureState { display:inline-flex; align-items:center; border-radius:999px; padding:3px 7px; border:1px solid #344557; font-size:9px; font-weight:900; letter-spacing:.04em; }
+.futureStateLive,.futureStateGood { border-color:#267353; background:rgba(31,116,80,.17); color:#8ce5b7; }
+.futureStateBad { border-color:#7d3945; background:rgba(128,48,62,.16); color:#ff9baa; }
+.futureStateNeutral { color:#96a9ba; }
+.futureMarket { color:#d4dee7; font-size:12px; font-weight:700; }
+.futureCardHead small { color:#7f92a4; font-size:10px; }
+.futureParentMoney { text-align:right; display:grid; gap:2px; flex:0 0 auto; }
+.futureParentMoney strong { font-size:16px; }
+.futureParentMoney small,.futureParentMoney span { color:#86a3bd; font-size:10px; }
+.futureStatsGrid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:7px; margin-top:12px; }
+.futureStatsGrid > div { background:#0e151d; border:1px solid #202c39; border-radius:10px; padding:9px; min-width:0; }
+.futureStatsGrid span { display:block; color:#7f92a4; font-size:9px; margin-bottom:3px; }
+.futureStatsGrid strong { font-size:14px; }
+.futureProgressWrap { margin-top:11px; }
+.futureProgressLabel { display:flex; justify-content:space-between; gap:10px; color:#8194a7; font-size:10px; margin-bottom:5px; }
+.futureProgressLabel strong { color:#b7c7d5; }
+.futureProgress { height:7px; border-radius:999px; background:#17212b; overflow:hidden; border:1px solid #22303d; }
+.futureProgress > span { display:block; height:100%; background:linear-gradient(90deg,#2b6e53,#50b883); border-radius:999px; }
+.futureFooter { display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-top:9px; color:#71869a; font-size:9px; }
+
+@media (max-width:620px) {
+  .futuresSummaryGrid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .futureConfigGrid { grid-template-columns:1fr 1fr; }
+  .futureTrackButton { grid-column:1 / -1; }
+  .futureStatsGrid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .futureCardHead { gap:8px; }
+  .futureParentMoney { max-width:100px; }
+}
+
+/* v5.2 futures grouped by player */
+.playerGroupedHeader { align-items:flex-end; }
+.playerGroupedHeader > div:first-child { display:grid; gap:2px; }
+.playerGroupedHeader small { color:#8194a7; font-size:10px; }
+.futureExpandControls { display:flex; gap:7px; flex-wrap:wrap; }
+.futureExpandControls button { padding:7px 10px; font-size:10px; border-radius:9px; background:#111a23; border:1px solid #2a3949; color:#c9d6e1; cursor:pointer; }
+.futurePlayerList { display:grid; gap:10px; }
+.futurePlayerGroup { background:rgba(20,27,36,.88); border:1px solid #202c39; border-radius:16px; overflow:hidden; box-shadow:0 8px 30px rgba(0,0,0,.10); }
+.futurePlayerGroup.open { border-color:#2d4153; }
+.futurePlayerHeader { width:100%; border:0; background:transparent; color:inherit; display:flex; justify-content:space-between; align-items:center; gap:14px; padding:13px 15px; text-align:left; cursor:pointer; }
+.futurePlayerHeader:hover { background:rgba(255,255,255,.018); }
+.futurePlayerNameBlock { min-width:0; display:grid; gap:5px; }
+.futurePlayerNameBlock h2 { font-size:17px; margin:0; overflow-wrap:anywhere; }
+.futurePlayerMeta { display:flex; gap:6px; flex-wrap:wrap; color:#8da1b4; font-size:10px; }
+.futurePlayerMeta span { background:#101820; border:1px solid #21303d; border-radius:999px; padding:3px 7px; }
+.futurePlayerHeaderRight { flex:0 0 auto; display:flex; align-items:center; gap:7px; color:#8398ab; }
+.futurePlayerHeaderRight small { font-size:9px; max-width:190px; text-align:right; }
+.futureChevron { color:#89a4bd; font-size:14px; }
+.futurePlayerBody { display:grid; gap:7px; padding:0 10px 10px; }
+.futurePlayerLeg { background:#0d151c; border:1px solid #20303c; border-radius:12px; padding:10px; }
+.futurePlayerLegHead { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+.futurePlayerLegTitle { min-width:0; display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; }
+.futurePlayerLegTitle > strong { font-size:13px; }
+.futurePlayerLegTitle > small { width:100%; color:#7f92a4; font-size:9px; }
+.futureStatsGrid.compact { margin-top:8px; gap:6px; }
+.futureStatsGrid.compact > div { background:#0a1117; }
+
+@media (max-width: 700px) {
+  .playerGroupedHeader { align-items:flex-start; flex-direction:column; }
+  .futureExpandControls { width:100%; }
+  .futureExpandControls button { flex:1; }
+  .futurePlayerHeaderRight small { display:none; }
+  .futurePlayerHeader { padding:13px 12px; }
+  .futurePlayerLegHead { gap:8px; }
+  .futurePlayerBody { padding:0 7px 7px; }
+  .futurePlayerLeg { padding:9px; }
+}
+
+
+/* History / settled bets */
+.historySummaryGrid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-bottom:14px; }
+.historySummaryGrid > div { background:#141c25; border:1px solid #273544; border-radius:16px; padding:13px 15px; }
+.historySummaryGrid span { display:block; color:#8fa0b3; font-size:11px; margin-bottom:4px; }
+.historySummaryGrid strong { font-size:20px; }
+.historyFilters { margin-bottom:14px; }
+.historyFilterGrid { display:grid; grid-template-columns:.8fr 1.8fr 1fr .8fr 1fr; gap:10px; align-items:end; }
+.historyFilterGrid label { color:#92a2b3; font-size:11px; display:flex; flex-direction:column; gap:6px; }
+.historyFilterGrid input, .historyFilterGrid select { width:100%; background:#0d141c; color:#f4f7fb; border:1px solid #304153; border-radius:12px; padding:10px 11px; min-height:40px; }
+.historyList { display:flex; flex-direction:column; gap:10px; }
+.historyCard { background:#141c25; border:1px solid #2b3948; border-radius:18px; overflow:hidden; }
+.historyCard-win { border-color:#215c43; }
+.historyCard-loss { border-color:#6b3038; }
+.historyCard-neutral { border-color:#46576a; }
+.historyCard summary { list-style:none; cursor:pointer; display:flex; justify-content:space-between; gap:16px; padding:14px 16px; align-items:center; }
+.historyCard summary::-webkit-details-marker { display:none; }
+.historySummaryMain { min-width:0; display:flex; flex-direction:column; gap:4px; }
+.historyTitle { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.historySummaryMain small { color:#88a0b8; }
+.historyMoney { text-align:right; display:flex; flex-direction:column; gap:2px; white-space:nowrap; }
+.historyMoney strong { font-size:18px; }
+.historyMoney span { color:#8ca3b9; font-size:11px; }
+.positiveText { color:#61e6a8 !important; }
+.negativeText { color:#ff7c88 !important; }
+.historyStatus { display:inline-flex; align-items:center; border:1px solid #3c4d5f; border-radius:999px; padding:2px 7px; font-size:9px; font-weight:800; letter-spacing:.04em; }
+.history-won { color:#66e9aa; border-color:#257955; background:#0f2b21; }
+.history-lost { color:#ff8792; border-color:#8f3d49; background:#30161b; }
+.history-push, .history-void, .history-voided, .history-cancelled, .history-canceled { color:#c0ccd8; background:#1c2732; }
+.historyExpanded { border-top:1px solid #273544; padding:14px 16px 16px; }
+.historyExpanded h4 { margin:14px 0 8px; }
+.historyMetricRow { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:7px; }
+.historyMetricRow > div { background:#0f171f; border:1px solid #263746; border-radius:12px; padding:9px 10px; }
+.historyMetricRow span { display:block; color:#7f92a4; font-size:9px; margin-bottom:3px; }
+.historyLegRow { display:flex; justify-content:space-between; gap:12px; background:#0f171f; border:1px solid #263746; border-radius:13px; padding:10px 11px; margin-bottom:7px; }
+.historyLegRow > div:first-child { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.historyLegRow small { color:#7890a7; }
+.historyLegRow span { color:#9db0c3; font-size:11px; }
+.historyLegRight { display:flex; align-items:flex-end; flex-direction:column; gap:5px; min-width:130px; }
+.historyLegActions { display:flex; gap:5px; }
+.historyLegActions button { border:1px solid #34485a; background:#18232e; color:#e9f0f7; border-radius:8px; padding:5px 7px; font-size:10px; cursor:pointer; }
+.historyLegActions .dangerGhost { color:#ff9ca5; border-color:#63353c; background:#25171a; }
+.historyLegActions button:disabled { opacity:.5; cursor:wait; }
+.historyToolNote { color:#8194a7; font-size:10px; margin:12px 0 0; }
+.notice { padding:10px 12px; border-radius:12px; margin:10px 0; font-size:12px; }
+.noticeSuccess { background:#102a20; border:1px solid #286847; color:#74e5ae; }
+.noticeError { background:#31171b; border:1px solid #71333c; color:#ff9da6; }
+
+@media (max-width: 720px) {
+  .historyFilterGrid { grid-template-columns:1fr 1fr; }
+  .historyFilterGrid label:nth-child(2) { grid-column:1/-1; }
+  .historyCard summary { align-items:flex-start; }
+  .historyMetricRow { grid-template-columns:1fr 1fr; }
+  .historyLegRow { flex-direction:column; }
+  .historyLegRight { align-items:flex-start; min-width:0; }
+  .historyMoney { min-width:105px; }
+  .bottomNav { width:min(97%,640px); }
+  .bottomNav a { font-size:12px; padding:9px 4px; }
+}
+
+/* Active Bets v6.4: manual sportsbook cash out */
+.cashOutSection { margin-top:14px; padding-top:12px; border-top:1px solid #202c39; }
+.cashOutButton { border:1px solid #3c5268; background:#17222d; color:#c8d7e5; border-radius:10px; padding:8px 12px; font-size:11px; font-weight:800; cursor:pointer; }
+.cashOutButton:hover { border-color:#5c7690; background:#1c2a37; }
+.cashOutPanel { display:grid; grid-template-columns:minmax(0,1fr) minmax(120px,160px) auto; gap:10px; align-items:end; background:#0e151d; border:1px solid #2a3949; border-radius:12px; padding:11px; }
+.cashOutPanel > div:first-child { display:grid; gap:3px; align-self:center; }
+.cashOutPanel > div:first-child strong { font-size:12px; }
+.cashOutPanel > div:first-child small { color:#8194a7; font-size:10px; }
+.cashOutPanel label { display:grid; gap:4px; color:#8fa0b3; font-size:10px; }
+.cashOutPanel input { width:100%; min-width:0; background:#0a1118; color:#f5f7fa; border:1px solid #34485c; border-radius:9px; padding:8px 9px; font:inherit; font-size:12px; }
+.cashOutActions { display:flex; align-items:center; justify-content:flex-end; gap:7px; }
+.cashOutConfirmButton { border:1px solid #7a6040; background:rgba(122,96,64,.22); color:#f0cf9f; border-radius:9px; padding:8px 10px; font-size:10px; font-weight:900; cursor:pointer; white-space:nowrap; }
+.cashOutConfirmButton:hover { background:rgba(122,96,64,.32); }
+.cashOutConfirmButton:disabled,.cashOutButton:disabled { opacity:.55; cursor:default; }
+.cashOutError { grid-column:1 / -1; color:#ff9baa; font-size:10px; }
+
+@media (max-width:620px) {
+  .cashOutPanel { grid-template-columns:1fr; align-items:stretch; }
+  .cashOutActions { justify-content:flex-start; }
+  .cashOutConfirmButton { flex:1; }
+}
+
+/* v6.5 futures verification + filters */
+.futureTicketLabel { text-transform:uppercase; letter-spacing:.06em; color:#71869a !important; font-size:8px !important; }
+.futureFilters { display:grid; grid-template-columns:minmax(220px,1.6fr) minmax(150px,.8fr) minmax(150px,.8fr) auto; gap:8px; align-items:end; margin:14px 2px 4px; }
+.futureFilters label { display:grid; gap:5px; color:#8194a7; font-size:10px; }
+.futureFilters input,.futureFilters select { width:100%; min-width:0; background:#0d141c; color:#f5f7fa; border:1px solid #2a3949; border-radius:10px; padding:9px 10px; outline:none; font:inherit; font-size:12px; min-height:38px; }
+.futureClearFilters { min-height:38px; padding:8px 12px; font-size:10px; border-radius:9px; background:#111a23; border:1px solid #2a3949; color:#c9d6e1; cursor:pointer; }
+
+@media (max-width:700px) {
+  .futureFilters { grid-template-columns:1fr 1fr; }
+  .futureSearchField { grid-column:1 / -1; }
+  .futureClearFilters { grid-column:1 / -1; }
+}
+
+
+/* v6.6 app-wide mobile/navigation polish */
+button, a, summary { -webkit-tap-highlight-color:transparent; }
+.refreshButton, .mobileFilterButton, .futureExpandControls button, .gameGroupToggle { touch-action:manipulation; }
+
+@media (max-width:620px) {
+  .shell { padding:18px 12px calc(138px + env(safe-area-inset-bottom, 0px)); }
+  .header { align-items:flex-start; gap:10px; margin-bottom:16px; }
+  .header > div:first-child { min-width:0; }
+  .header h1 { font-size:26px; line-height:1.08; }
+  .header .eyebrow { display:block; line-height:1.35; }
+  .refreshButton { min-height:44px; flex:0 0 auto; padding:9px 12px; white-space:nowrap; }
+  .bottomNav { width:calc(100% - 20px); bottom:calc(8px + env(safe-area-inset-bottom, 0px)); border-radius:18px; padding:6px; }
+  .bottomNav a { min-height:44px; padding:8px 3px; font-size:12px; }
+  .gameGroupList, .historyList, .futurePlayerList, .activeBetList { scroll-margin-bottom:140px; }
+  .gameGroup { scroll-margin-bottom:140px; }
+}
+
+@media (max-width:390px) {
+  .shell { padding-left:10px; padding-right:10px; }
+  .bottomNav { width:calc(100% - 16px); }
+  .bottomNav a { font-size:11px; }
+}
+
+
+/* v6.7 mobile nav + totals-threshold polish */
+.liveValueLine { display:flex; align-items:center; justify-content:flex-end; gap:7px; }
+.thresholdMet { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:999px; background:#0f5138; border:1px solid #2ea66f; color:#7ff0b8; font-size:15px; font-weight:900; line-height:1; }
+
+@media (max-width:620px) {
+  /* In iOS Safari, the visual viewport already stops above browser chrome.
+     Do not add safe-area inset a second time while running in the browser. */
+  .bottomNav { bottom:4px; }
+  .shell { padding-bottom:118px; }
+}
+
+/* Home-screen/PWA mode does need the physical device safe-area inset. */
+@media (display-mode: standalone) and (max-width:620px) {
+  .bottomNav { bottom:calc(8px + env(safe-area-inset-bottom, 0px)); }
+  .shell { padding-bottom:calc(126px + env(safe-area-inset-bottom, 0px)); }
+}
+
+/* v6.8 production/mobile cleanup */
+.bottomNav a.isActive { background:#202b38; color:#f7f9fb; }
+.metricPositive strong { color:#61e6a8; }
+.metricNegative strong { color:#ff7c88; }
