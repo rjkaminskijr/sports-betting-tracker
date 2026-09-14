@@ -4,9 +4,22 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchJsonWithRetry } from "../../lib/client-api";
 
 const REFRESH_MS = 30000;
+const SETTLED = new Set(["WON", "LOST", "PUSH", "VOID", "VOIDED", "CANCELLED", "CANCELED", "CASHED_OUT"]);
 
 const upper = (value) => String(value || "").trim().toUpperCase();
 const text = (value) => String(value || "").trim();
+
+function statusOf(row) {
+  return upper(row.leg_status || row.status || "PENDING");
+}
+
+function isSettled(row) {
+  return Boolean(row.is_settled) || SETTLED.has(statusOf(row));
+}
+
+function isUndecided(row) {
+  return !isSettled(row);
+}
 
 function sportOf(row) {
   const raw = upper(row.parent_sport || row.sport);
@@ -47,18 +60,11 @@ function formatGameTime(value) {
 }
 
 function stateOf(row) {
+  if (isSettled(row)) return "SETTLED";
   const live = upper(row.live_state);
-  const status = upper(row.leg_status || row.status);
+  const status = statusOf(row);
   if (live === "LIVE" || ["LIVE", "IN_PROGRESS"].includes(status)) return "LIVE";
   return "UPCOMING";
-}
-
-function lineText(row) {
-  const direction = upper(row.direction);
-  const line = row.line_value;
-  if (direction && line !== null && line !== undefined && line !== "") return `${direction} ${line}`;
-  if (line !== null && line !== undefined && line !== "") return String(line);
-  return "";
 }
 
 function liveValue(row) {
@@ -74,7 +80,7 @@ function uniqueKey(row) {
     String(row.line_value ?? ""),
     upper(row.direction),
     row.espn_event_id ? `event:${row.espn_event_id}` : `game:${gameOf(row)}`,
-    upper(row.leg_status),
+    statusOf(row),
     liveValue(row)
   ].join("||");
 }
@@ -89,24 +95,36 @@ function combineRows(rows) {
 
   return [...groups.values()].map((group) => {
     const first = group[0];
-    const betIds = [...new Set(group.map((r) => Number(r.bet_row_id)).filter(Number.isFinite))].sort((a,b) => a-b);
+    const betIds = [...new Set(group.map((r) => Number(r.bet_row_id)).filter(Number.isFinite))].sort((a, b) => a - b);
     const sportsbooks = [...new Set(group.map((r) => text(r.parent_sportsbook || r.sportsbook)).filter(Boolean))].sort();
+    const settled = group.every(isSettled);
+    const live = group.some((r) => stateOf(r) === "LIVE");
     return {
       ...first,
       count: group.length,
       betIds,
       sportsbooks,
       groupRows: group,
-      state: group.some((r) => stateOf(r) === "LIVE") ? "LIVE" : "UPCOMING"
+      settled,
+      state: settled ? "SETTLED" : live ? "LIVE" : "UPCOMING"
     };
   });
 }
 
+function urgencyRank(row) {
+  const status = statusOf(row);
+  if (row.state === "LIVE" && !isSettled(row)) return 0;
+  if (!isSettled(row)) return 1;
+  if (status === "WON") return 2;
+  if (["PUSH", "VOID", "VOIDED", "CANCELLED", "CANCELED"].includes(status)) return 3;
+  return 4;
+}
+
 function sortCombined(rows) {
   return [...rows].sort((a, b) => {
-    const aLive = a.state === "LIVE" ? 0 : 1;
-    const bLive = b.state === "LIVE" ? 0 : 1;
-    if (aLive !== bLive) return aLive - bLive;
+    const ar = urgencyRank(a);
+    const br = urgencyRank(b);
+    if (ar !== br) return ar - br;
     const at = eventTime(a)?.getTime() ?? Number.POSITIVE_INFINITY;
     const bt = eventTime(b)?.getTime() ?? Number.POSITIVE_INFINITY;
     if (at !== bt) return at - bt;
@@ -148,39 +166,27 @@ function buildGameGroups(rows) {
   const groups = [...map.values()].map((group) => {
     const preferredGame = [...group.gameLabels.entries()]
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0];
+    const undecidedCount = group.rows.filter(isUndecided).length;
+    const settledCount = group.rows.length - undecidedCount;
 
     return {
       ...group,
       game: preferredGame || group.game,
-      gameLabels: undefined
+      gameLabels: undefined,
+      undecidedCount,
+      settledCount,
+      hasUndecided: undecidedCount > 0
     };
   });
 
-  return groups.sort((a,b) => {
+  return groups.sort((a, b) => {
     if (a.isLive !== b.isLive) return a.isLive ? -1 : 1;
+    if (a.hasUndecided !== b.hasUndecided) return a.hasUndecided ? -1 : 1;
     const at = a.eventTime ? new Date(a.eventTime).getTime() : Number.POSITIVE_INFINITY;
     const bt = b.eventTime ? new Date(b.eventTime).getTime() : Number.POSITIVE_INFINITY;
     if (at !== bt) return at - bt;
     return `${a.sport}|${a.game}`.localeCompare(`${b.sport}|${b.game}`);
   });
-}
-
-
-function friendlyMarketLine(row) {
-  const market = text(row.market);
-  const direction = upper(row.direction);
-  const line = row.line_value;
-  if (direction && line !== null && line !== undefined && line !== "") {
-    const dir = direction === "OVER" ? "Over" : direction === "UNDER" ? "Under" : direction;
-    if (/passing tds?/i.test(market)) return `${dir} ${line} Passing TDs`;
-    if (/passing yards?/i.test(market)) return `${dir} ${line} Passing Yards`;
-    if (/rushing yards?/i.test(market)) return `${dir} ${line} Rushing Yards`;
-    if (/receiving yards?/i.test(market)) return `${dir} ${line} Receiving Yards`;
-    if (/receptions?/i.test(market)) return `${dir} ${line} Receptions`;
-    if (/total/i.test(market)) return `${dir} ${line} ${market}`;
-    return `${dir} ${line}${market ? ` ${market}` : ""}`;
-  }
-  return market || "Market unavailable";
 }
 
 function friendlyLiveValue(row) {
@@ -205,11 +211,7 @@ function friendlyLiveValue(row) {
 function isGameOrTeamTotal(row) {
   const market = upper(row.market);
   if (!market) return false;
-
   if (market.includes("TEAM TOTAL")) return true;
-
-  // Game-total labels used by the sportsbooks in this tracker. Keep this
-  // intentionally narrow so player/stat totals do not receive the check.
   return (
     market === "TOTAL" ||
     market === "GAME TOTAL" ||
@@ -222,7 +224,6 @@ function isGameOrTeamTotal(row) {
 
 function overThresholdMet(row) {
   if (!isGameOrTeamTotal(row)) return false;
-
   const direction = upper(row.direction);
   const selection = upper(row.selection);
   const isOver = direction === "OVER" || /^OVER\b/.test(selection);
@@ -238,68 +239,164 @@ function overThresholdMet(row) {
   return Number.isFinite(line) && Number.isFinite(current) && current > line;
 }
 
-function urgencyRank(row) {
-  const status = upper(row.leg_status || row.status);
-  if (row.state === "LIVE" && !["WON","LOST","PUSH","VOID","VOIDED"].includes(status)) return 0;
-  if (status === "WON") return 1;
-  if (row.state === "LIVE") return 2;
-  return 3;
+function isPlayerLeg(row) {
+  if (text(row.espn_athlete_id) || text(row.player_id) || text(row.athlete_id)) return true;
+  const market = text(row.market);
+  return /(receiving|rushing|passing|receptions?|touchdown|\btd\b|first to score|last to score|completions?|interceptions?|longest reception|longest rush)/i.test(market);
 }
 
-function sortGameRows(rows) {
-  return [...rows].sort((a,b) => {
-    const ar = urgencyRank(a);
-    const br = urgencyRank(b);
-    if (ar !== br) return ar - br;
-    return String(a.selection || "").localeCompare(String(b.selection || ""));
+function directionShort(row) {
+  const direction = upper(row.direction);
+  if (direction === "OVER") return "O";
+  if (direction === "UNDER") return "U";
+  if (direction === "AT_LEAST") return "≥";
+  return direction;
+}
+
+function compactMarketLabel(row) {
+  const market = text(row.market);
+  const m = upper(market);
+  const line = row.line_value;
+  const dir = directionShort(row);
+  const prefix = dir && line !== null && line !== undefined && line !== "" ? `${dir}${line} ` : "";
+
+  if (m.includes("FIRST TD") || m.includes("FIRST TOUCHDOWN") || m.includes("FIRST TO SCORE")) return "FTD";
+  if (m.includes("LAST TD") || m.includes("LAST TOUCHDOWN") || m.includes("LAST TO SCORE")) return "LTD";
+  if (m.includes("ANYTIME TD") || m === "TOUCHDOWN SCORER" || m.includes("TO SCORE A TOUCHDOWN")) return "ATD";
+  if (m.includes("RECEIVING YARD")) return `${prefix}Rec Yds`.trim();
+  if (m.includes("RUSHING YARD")) return `${prefix}Rush Yds`.trim();
+  if (m.includes("PASSING YARD")) return `${prefix}Pass Yds`.trim();
+  if (m.includes("RECEPTION")) return `${prefix}Rec`.trim();
+  if (m.includes("PASSING TD")) return `${prefix}Pass TDs`.trim();
+  if (m.includes("INTERCEPTION")) return `${prefix}INT`.trim();
+  if (m.includes("MONEYLINE") || m === "ML") return "ML";
+  if (m.includes("SPREAD")) return `${text(row.selection)}${line !== null && line !== undefined && line !== "" ? ` ${line}` : ""}`.trim();
+  if (m.includes("TEAM TOTAL")) return `${prefix}Team Total`.trim();
+  if (isGameOrTeamTotal(row)) return `${prefix}Total`.trim();
+  if (prefix) return `${prefix}${market}`.trim();
+  return market || text(row.selection) || "Market";
+}
+
+function badgeStatusClass(row) {
+  const status = statusOf(row);
+  if (status === "WON") return "marketPillWon";
+  if (status === "LOST") return "marketPillLost";
+  if (["PUSH", "VOID", "VOIDED", "CANCELLED", "CANCELED"].includes(status)) return "marketPillNeutral";
+  if (row.state === "LIVE") return "marketPillLive";
+  return "marketPillUpcoming";
+}
+
+function MarketPill({ row, includeSelection = false }) {
+  const value = friendlyLiveValue(row);
+  const status = statusOf(row);
+  const title = [
+    row.selection,
+    row.market,
+    row.sportsbooks?.join(", "),
+    row.betIds?.length ? `Bet${row.betIds.length === 1 ? "" : "s"} ${row.betIds.join(", ")}` : ""
+  ].filter(Boolean).join(" • ");
+
+  return (
+    <span className={`marketPill ${badgeStatusClass(row)}`} title={title}>
+      {includeSelection && <span className="marketPillSelection">{row.selection}</span>}
+      <span className="marketPillLabel">{compactMarketLabel(row)}</span>
+      {row.count > 1 && <span className="marketPillCount">×{row.count}</span>}
+      {overThresholdMet(row) && <span className="marketPillResult">✓</span>}
+      {status === "WON" && <span className="marketPillResult">✓</span>}
+      {status === "LOST" && <span className="marketPillResult">✕</span>}
+      {!isSettled(row) && value !== "—" && <span className="marketPillValue">{value}</span>}
+    </span>
+  );
+}
+
+function buildPlayerGroups(rows) {
+  const map = new Map();
+  for (const row of rows.filter(isPlayerLeg)) {
+    const name = text(row.selection) || "Unnamed player";
+    const key = `${text(row.espn_athlete_id) || text(row.player_id) || name.toLowerCase()}`;
+    if (!map.has(key)) map.set(key, { key, name, rows: [] });
+    map.get(key).rows.push(row);
+  }
+
+  return [...map.values()].map((group) => {
+    const rowsSorted = [...group.rows].sort((a, b) => urgencyRank(a) - urgencyRank(b) || compactMarketLabel(a).localeCompare(compactMarketLabel(b)));
+    const activeRows = rowsSorted.filter(isUndecided);
+    const settledRows = rowsSorted.filter(isSettled);
+    const betIds = [...new Set(rowsSorted.flatMap((row) => row.betIds || []))];
+    const live = activeRows.some((row) => row.state === "LIVE");
+    return { ...group, rows: rowsSorted, activeRows, settledRows, betIds, live };
+  }).sort((a, b) => {
+    if (a.live !== b.live) return a.live ? -1 : 1;
+    if (Boolean(a.activeRows.length) !== Boolean(b.activeRows.length)) return a.activeRows.length ? -1 : 1;
+    return a.name.localeCompare(b.name);
   });
 }
 
-function GameGroup({ group, open, onToggle, gameStatus }) {
-  const sortedRows = sortGameRows(group.rows);
+function PlayerMarketGroup({ group, showSettled }) {
   return (
-    <section className={`gameGroup ${group.isLive ? "liveGameGroup" : ""}`}>
+    <div className={`playerMarketGroup ${group.live ? "playerMarketGroupLive" : ""}`}>
+      <div className="playerMarketHead">
+        <strong>{group.name}</strong>
+        <span>{group.betIds.length} bet{group.betIds.length === 1 ? "" : "s"}</span>
+      </div>
+      {!!group.activeRows.length && <div className="marketPillRow">{group.activeRows.map((row, index) => <MarketPill key={`${uniqueKey(row)}-${index}`} row={row} />)}</div>}
+      {showSettled && !!group.settledRows.length && (
+        <details className="settledMarketDetails">
+          <summary>{group.settledRows.length} settled</summary>
+          <div className="marketPillRow">{group.settledRows.map((row, index) => <MarketPill key={`${uniqueKey(row)}-settled-${index}`} row={row} />)}</div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function TeamGameMarkets({ rows, showSettled }) {
+  const activeRows = rows.filter(isUndecided);
+  const settledRows = rows.filter(isSettled);
+  if (!activeRows.length && !(showSettled && settledRows.length)) return null;
+
+  return (
+    <div className="teamMarketSection">
+      <div className="compactSectionLabel">Team / Game</div>
+      {!!activeRows.length && <div className="marketPillRow">{activeRows.map((row, index) => <MarketPill key={`${uniqueKey(row)}-team-${index}`} row={row} includeSelection />)}</div>}
+      {showSettled && !!settledRows.length && (
+        <details className="settledMarketDetails">
+          <summary>{settledRows.length} settled</summary>
+          <div className="marketPillRow">{settledRows.map((row, index) => <MarketPill key={`${uniqueKey(row)}-team-settled-${index}`} row={row} includeSelection />)}</div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function GameGroup({ group, open, onToggle, gameStatus, showSettled }) {
+  const playerGroups = buildPlayerGroups(group.rows);
+  const teamRows = group.rows.filter((row) => !isPlayerLeg(row));
+
+  return (
+    <section className={`gameGroup ${group.isLive ? "liveGameGroup" : ""} ${!group.hasUndecided ? "gameGroupSettled" : ""}`}>
       <button className="gameGroupHeader gameGroupToggle" type="button" onClick={onToggle} aria-expanded={open}>
         <div>
           <div className="gameGroupTitleLine"><span>{group.sport}</span><h2>{group.game}</h2>{group.isLive && <span className="liveBadge">LIVE</span>}</div>
           <small>{formatGameTime(group.eventTime)}</small>{group.isLive && gameStatus?.readout && <div className="gameLiveReadout">{gameStatus.readout}</div>}
         </div>
         <div className="gameGroupHeaderRight">
-          <span className="gameLegCount">{group.rows.length} leg{group.rows.length === 1 ? "" : "s"}</span>
+          <span className="gameLegCount">{group.undecidedCount} sweat{group.undecidedCount === 1 ? "" : "s"}{showSettled && group.settledCount ? ` · ${group.settledCount} settled` : ""}</span>
           <span className={`gameChevron ${open ? "gameChevronOpen" : ""}`}>⌄</span>
         </div>
       </button>
-      {open && <div className="gameLegList">{sortedRows.map((row, index) => <LegCard key={`${uniqueKey(row)}-${index}`} row={row} />)}</div>}
+      {open && (
+        <div className="gameCompactBody">
+          {!!playerGroups.length && (
+            <div className="playerMarketSection">
+              <div className="compactSectionLabel">Players</div>
+              <div className="playerMarketList">{playerGroups.map((player) => <PlayerMarketGroup key={player.key} group={player} showSettled={showSettled} />)}</div>
+            </div>
+          )}
+          <TeamGameMarkets rows={teamRows} showSettled={showSettled} />
+        </div>
+      )}
     </section>
-  );
-}
-
-function LegCard({ row }) {
-  const live = row.state === "LIVE";
-  return (
-    <article className={`gameLegCard ${live ? "gameLegLive" : ""}`}>
-      <div className="gameLegMain">
-        <div className="gameLegTitleLine">
-          <strong>{row.selection || "Unnamed selection"}</strong>
-          {row.count > 1 && <span className="countBadge">×{row.count}</span>}
-        </div>
-        <span>{friendlyMarketLine(row)}</span>
-        <small>{row.sportsbooks.join(", ") || "Sportsbook unavailable"}</small>
-        {row.count > 1 && (
-          <details className="duplicateDetails">
-            <summary>Used in {row.count} bets</summary>
-            <div>{row.betIds.map((id) => <span key={id}>Bet {id}</span>)}</div>
-          </details>
-        )}
-      </div>
-      <div className="gameLegValue">
-        {live && <span className="liveBadge">LIVE</span>}
-        <div className="liveValueLine">
-          {overThresholdMet(row) && <span className="thresholdMet" title="Over threshold reached" aria-label="Over threshold reached">✓</span>}
-          <strong>{friendlyLiveValue(row)}</strong>
-        </div>
-      </div>
-    </article>
   );
 }
 
@@ -314,6 +411,7 @@ export default function LegsPage() {
   const [gameState, setGameState] = useState("ALL");
   const [date, setDate] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [viewMode, setViewMode] = useState("SWEAT");
   const [openGames, setOpenGames] = useState({});
   const [gameStatuses, setGameStatuses] = useState({});
 
@@ -353,21 +451,27 @@ export default function LegsPage() {
       if (gameState !== "ALL" && state !== gameState) return false;
       if (date && dateKey(row) !== date) return false;
       if (q) {
-        const haystack = [row.selection,row.market,row.event_team_a,row.event_team_b,row.parent_event_name,row.bet_row_id,book,sportOf(row)].join(" ").toLowerCase();
+        const haystack = [row.selection, row.market, row.event_team_a, row.event_team_b, row.parent_event_name, row.bet_row_id, book, sportOf(row)].join(" ").toLowerCase();
         if (!haystack.includes(q)) return false;
       }
       return true;
     });
   }, [rows, search, sportsbook, sport, gameState, date]);
 
-  const combined = useMemo(() => sortCombined(combineRows(filteredOccurrences)), [filteredOccurrences]);
-  const games = useMemo(() => buildGameGroups(combined), [combined]);
+  const allCombined = useMemo(() => sortCombined(combineRows(filteredOccurrences)), [filteredOccurrences]);
+  const displayCombined = useMemo(() => viewMode === "SWEAT" ? allCombined.filter(isUndecided) : allCombined, [allCombined, viewMode]);
+  const allGames = useMemo(() => buildGameGroups(allCombined), [allCombined]);
+  const games = useMemo(() => buildGameGroups(displayCombined), [displayCombined]);
 
   useEffect(() => {
     setOpenGames((current) => {
       const next = { ...current };
       for (const game of games) {
-        if (!(game.key in next)) next[game.key] = game.isLive;
+        if (!game.hasUndecided) {
+          next[game.key] = false;
+        } else if (!(game.key in next)) {
+          next[game.key] = game.isLive;
+        }
       }
       for (const key of Object.keys(next)) {
         if (!games.some((game) => game.key === key)) delete next[key];
@@ -404,8 +508,10 @@ export default function LegsPage() {
     return () => { cancelled = true; clearInterval(id); };
   }, [liveGameRefs.map((g) => `${g.eventId}|${g.sport}`).join(",")]);
 
-  const liveCount = combined.filter((r) => r.state === "LIVE").length;
-  const upcomingCount = combined.length - liveCount;
+  const undecidedCount = allCombined.filter(isUndecided).length;
+  const wonCount = allCombined.filter((r) => statusOf(r) === "WON").length;
+  const lostCount = allCombined.filter((r) => statusOf(r) === "LOST").length;
+  const liveGameCount = allGames.filter((g) => g.isLive).length;
   const betCount = new Set(filteredOccurrences.map((r) => Number(r.bet_row_id)).filter(Number.isFinite)).size;
 
   function clearFilters() {
@@ -415,18 +521,24 @@ export default function LegsPage() {
   return (
     <>
       <header className="header activeHeader">
-        <div><span className="eyebrow">Game bets only · auto-refresh 30 sec</span><h1>Active Legs</h1></div>
+        <div><span className="eyebrow">Game-day view · auto-refresh 30 sec</span><h1>Active Legs</h1></div>
         <button className="refreshButton" onClick={load}>↻ Refresh</button>
       </header>
 
-      <section className="legsSummaryGrid">
-        <div><span>Unique Legs</span><strong>{combined.length}</strong></div>
-        <div><span>Live</span><strong>{liveCount}</strong></div>
-        <div><span>Upcoming</span><strong>{upcomingCount}</strong></div>
-        <div><span>Active Bets</span><strong>{betCount}</strong></div>
+      <section className="gamedaySummaryStrip">
+        <div><span>Games Live</span><strong>{liveGameCount}</strong></div>
+        <div><span>Still Sweating</span><strong>{undecidedCount}</strong></div>
+        <div><span>Won</span><strong>{wonCount}</strong></div>
+        <div><span>Lost</span><strong>{lostCount}</strong></div>
       </section>
 
-      <p className="lastUpdated">{updated ? `Database view updated ${updated.toLocaleTimeString([], {hour:"numeric",minute:"2-digit"})}` : "Loading database view…"}</p>
+      <div className="gamedayModeBar" role="group" aria-label="Active legs view">
+        <button className={viewMode === "SWEAT" ? "gamedayModeActive" : ""} onClick={() => setViewMode("SWEAT")}>Sweat</button>
+        <button className={viewMode === "ALL" ? "gamedayModeActive" : ""} onClick={() => setViewMode("ALL")}>All Legs</button>
+        <span>{viewMode === "SWEAT" ? "Undecided action only" : "Settled markets stay collapsed"}</span>
+      </div>
+
+      <p className="lastUpdated">{updated ? `Database view updated ${updated.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "Loading database view…"}</p>
 
       <div className="mobileFilterBar">
         <button className="mobileFilterButton" onClick={() => setFiltersOpen((v) => !v)}>{filtersOpen ? "Hide Filters" : "Filters"}</button>
@@ -439,14 +551,14 @@ export default function LegsPage() {
           <label className="searchField">Search<input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Player, team, market, bet ID…" /></label>
           <label>Sportsbook<select value={sportsbook} onChange={(e) => setSportsbook(e.target.value)}><option value="ALL">All</option>{sportsbooks.map((x) => <option key={x}>{x}</option>)}</select></label>
           <label>Sport<select value={sport} onChange={(e) => setSport(e.target.value)}><option value="ALL">All</option>{sports.map((x) => <option key={x}>{x}</option>)}</select></label>
-          <label>State<select value={gameState} onChange={(e) => setGameState(e.target.value)}><option value="ALL">All</option><option value="LIVE">Live</option><option value="UPCOMING">Upcoming</option></select></label>
+          <label>State<select value={gameState} onChange={(e) => setGameState(e.target.value)}><option value="ALL">All</option><option value="LIVE">Live</option><option value="UPCOMING">Upcoming</option><option value="SETTLED">Settled</option></select></label>
           <label>Game Date<input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
         </div>
       </section>
 
       {error && <div className="error">{error}</div>}
       {loading && !rows.length && <div className="skeleton">Loading active legs…</div>}
-      {!loading && !error && !combined.length && <div className="empty">No active non-futures legs match the selected filters.</div>}
+      {!loading && !error && !displayCombined.length && <div className="empty">{viewMode === "SWEAT" && allCombined.length ? "Nothing left to sweat in the selected games. Switch to All Legs to review settled markets." : "No active non-futures legs match the selected filters."}</div>}
 
       {!!games.length && <div className="gameViewControls">
         <button className="textButton" onClick={() => setOpenGames(Object.fromEntries(games.map((g) => [g.key, true])))}>Expand all</button>
@@ -455,10 +567,10 @@ export default function LegsPage() {
       </div>}
 
       <div className="gameGroupList">
-        {games.map((group) => <GameGroup key={group.key} group={group} open={Boolean(openGames[group.key])} onToggle={() => setOpenGames((current) => ({ ...current, [group.key]: !current[group.key] }))} gameStatus={gameStatuses[String(group.eventId || "")]} />)}
+        {games.map((group) => <GameGroup key={group.key} group={group} open={Boolean(openGames[group.key])} onToggle={() => setOpenGames((current) => ({ ...current, [group.key]: !current[group.key] }))} gameStatus={gameStatuses[String(group.eventId || "")]} showSettled={viewMode === "ALL"} />)}
       </div>
 
-      {!!combined.length && <p className="legsFootnote">{filteredOccurrences.length} active leg occurrence{filteredOccurrences.length === 1 ? "" : "s"} combined into {combined.length} unique leg{combined.length === 1 ? "" : "s"} across {betCount} bet{betCount === 1 ? "" : "s"}.</p>}
+      {!!allCombined.length && <p className="legsFootnote">{filteredOccurrences.length} leg occurrence{filteredOccurrences.length === 1 ? "" : "s"} combined into {allCombined.length} unique leg{allCombined.length === 1 ? "" : "s"} across {betCount} bet{betCount === 1 ? "" : "s"}.</p>}
     </>
   );
 }

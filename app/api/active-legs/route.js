@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseRest } from "../../../lib/supabase-server";
 
-const ACTIVE_FILTER = "in.(PENDING,OPEN,LIVE,IN_PROGRESS)";
+const TRACKABLE_PARENT_FILTER = "in.(PENDING,OPEN,LIVE,IN_PROGRESS,LOST)";
 const SETTLED = new Set(["WON","LOST","PUSH","VOID","VOIDED","CANCELLED","CANCELED","CASHED_OUT"]);
 
 function upper(value) {
@@ -14,7 +14,7 @@ export async function GET() {
       supabaseRest("bets", {
         searchParams: {
           select: "id,sportsbook,bet_type,sport,headline,subtitle,event_name,status,stake,to_pay,placed_at,source_captured_at",
-          status: ACTIVE_FILTER,
+          status: TRACKABLE_PARENT_FILTER,
           order: "placed_at.desc.nullslast,id.desc"
         }
       }),
@@ -44,7 +44,26 @@ export async function GET() {
       });
     }
 
-    const betMap = new Map(gameBets.map((bet) => [Number(bet.id), bet]));
+    const legsByBet = new Map();
+    for (const leg of legs || []) {
+      const betId = Number(leg.bet_row_id);
+      if (!legsByBet.has(betId)) legsByBet.set(betId, []);
+      legsByBet.get(betId).push(leg);
+    }
+
+    const betMap = new Map();
+    for (const bet of gameBets) {
+      const betId = Number(bet.id);
+      const betLegs = (legsByBet.get(betId) || []).filter((leg) => upper(leg.tracking_scope) !== "SEASON");
+      const hasUnsettledLeg = betLegs.some((leg) => !SETTLED.has(upper(leg.status || leg.leg_status || "PENDING")));
+
+      // A LOST parlay stays on Active Legs only while another child leg still
+      // needs tracking. This mirrors update-live-bets and keeps game-day action
+      // visible without dragging completed tickets back into the screen.
+      if (upper(bet.status) === "LOST" && !hasUnsettledLeg) continue;
+      betMap.set(betId, bet);
+    }
+
     const rows = [];
 
     for (const leg of legs || []) {
@@ -54,11 +73,14 @@ export async function GET() {
       if (upper(leg.tracking_scope) === "SEASON") continue;
 
       const legStatus = upper(leg.status || leg.leg_status || "PENDING");
-      if (SETTLED.has(legStatus)) continue;
 
+      // Include settled child legs while their ticket is still relevant. The
+      // client collapses/hides them by default in Sweat mode, but they remain
+      // available for the compact game/player context when needed.
       rows.push({
         ...leg,
         leg_status: legStatus,
+        is_settled: SETTLED.has(legStatus),
         parent_status: upper(bet.status),
         parent_sportsbook: bet.sportsbook || leg.sportsbook || "",
         parent_bet_type: bet.bet_type || "",

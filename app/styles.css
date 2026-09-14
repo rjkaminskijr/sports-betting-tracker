@@ -461,3 +461,51 @@ button, a, summary { -webkit-tap-highlight-color:transparent; }
 .bottomNav a.isActive { background:#202b38; color:#f7f9fb; }
 .metricPositive strong { color:#61e6a8; }
 .metricNegative strong { color:#ff7c88; }
+
+/* Active Legs v7.0 game-day compact player grouping */
+.gamedaySummaryStrip { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-bottom:8px; }
+.gamedaySummaryStrip > div { background:rgba(20,27,36,.9); border:1px solid #202c39; border-radius:14px; padding:11px 12px; min-width:0; }
+.gamedaySummaryStrip span { display:block; color:#8498ab; font-size:10px; margin-bottom:3px; }
+.gamedaySummaryStrip strong { display:block; font-size:18px; }
+.gamedayModeBar { display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin:8px 0 3px; }
+.gamedayModeBar button { padding:7px 11px; border-radius:999px; background:#111922; border:1px solid #2a3949; color:#9db0c1; font-size:10px; cursor:pointer; }
+.gamedayModeBar button.gamedayModeActive { background:#1d3b30; border-color:#2e7859; color:#91e4b7; font-weight:800; }
+.gamedayModeBar > span { color:#718497; font-size:10px; margin-left:2px; }
+.gameGroupSettled { opacity:.76; }
+.gameCompactBody { display:grid; gap:10px; }
+.playerMarketSection,.teamMarketSection { display:grid; gap:6px; }
+.compactSectionLabel { color:#72879a; font-size:9px; font-weight:900; letter-spacing:.08em; text-transform:uppercase; padding:0 2px; }
+.playerMarketList { display:grid; gap:6px; }
+.playerMarketGroup { display:grid; gap:6px; padding:9px 10px; background:#0d151c; border:1px solid #1d2c38; border-radius:11px; }
+.playerMarketGroupLive { border-color:#285540; background:rgba(13,30,24,.6); }
+.playerMarketHead { display:flex; align-items:center; justify-content:space-between; gap:10px; min-width:0; }
+.playerMarketHead strong { font-size:12px; overflow-wrap:anywhere; }
+.playerMarketHead > span { color:#6f8498; font-size:9px; flex:0 0 auto; }
+.marketPillRow { display:flex; flex-wrap:wrap; gap:5px; }
+.marketPill { display:inline-flex; align-items:center; gap:4px; max-width:100%; border:1px solid #2b3a48; background:#151f29; color:#c5d2de; border-radius:999px; padding:5px 7px; font-size:10px; line-height:1.1; }
+.marketPillLive { border-color:#2c7657; background:rgba(31,107,76,.18); color:#9ee9bf; }
+.marketPillWon { border-color:#286648; background:rgba(34,112,77,.16); color:#8ee4b4; }
+.marketPillLost { border-color:#743643; background:rgba(126,47,62,.14); color:#f1a1ad; }
+.marketPillNeutral { border-color:#4c5864; color:#a7b3bd; }
+.marketPillUpcoming { color:#c5d2de; }
+.marketPillSelection { color:#f0f4f7; font-weight:800; margin-right:1px; }
+.marketPillLabel { font-weight:800; white-space:nowrap; }
+.marketPillCount { color:#8fa4b7; font-size:8px; font-weight:900; }
+.marketPillValue { color:#7ea4c2; font-size:9px; font-weight:800; white-space:nowrap; }
+.marketPillLive .marketPillValue { color:#7fe1aa; }
+.marketPillResult { font-size:10px; font-weight:900; }
+.settledMarketDetails { margin-top:0; }
+.settledMarketDetails > summary { list-style:none; width:max-content; max-width:100%; color:#708497; font-size:9px; cursor:pointer; padding:1px 2px; }
+.settledMarketDetails > summary::-webkit-details-marker { display:none; }
+.settledMarketDetails[open] > summary { margin-bottom:5px; }
+.teamMarketSection { padding-top:2px; }
+
+@media (max-width:620px) {
+  .gamedaySummaryStrip { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .gamedayModeBar { margin-top:6px; }
+  .gamedayModeBar > span { width:100%; margin-left:2px; }
+  .playerMarketGroup { padding:8px; }
+  .marketPill { padding:5px 6px; font-size:9px; }
+  .marketPillValue { font-size:8px; }
+  .gameLegCount { font-size:9px; }
+}
