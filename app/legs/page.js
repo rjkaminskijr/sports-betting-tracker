@@ -30,6 +30,11 @@ function isFinalGameStatus(gameStatus) {
   return readout.includes("FINAL") || detail.includes("FINAL");
 }
 
+function isLiveGameStatus(gameStatus) {
+  if (!gameStatus || isFinalGameStatus(gameStatus)) return false;
+  return String(gameStatus.state || "").trim().toLowerCase() === "in";
+}
+
 function sportOf(row) {
   const raw = upper(row.parent_sport || row.sport);
   if (["NCAAF", "CFB", "COLLEGE FOOTBALL"].includes(raw)) return "CFB";
@@ -147,8 +152,11 @@ function buildGameGroups(rows) {
   for (const row of sortCombined(rows)) {
     const eventId = text(row.espn_event_id);
     const fallbackGame = gameOf(row);
+    // ESPN event_id is the canonical game identity. Do not split one game
+    // into separate cards because imported legs use different sport labels
+    // such as "NFL" versus "Football".
     const key = eventId
-      ? `${sportOf(row)}||event:${eventId}`
+      ? `event:${eventId}`
       : `${sportOf(row)}||game:${fallbackGame}||${row.event_time || ""}`;
 
     if (!map.has(key)) {
@@ -484,6 +492,12 @@ export default function LegsPage() {
     if (viewMode !== "SWEAT") return allCombined;
     return allCombined.filter((row) => {
       if (!isUndecided(row)) return false;
+
+      // Once the parent ticket is LOST, its remaining child legs can continue
+      // updating in the backend for history, but they are no longer a gameday
+      // "sweat" because the wager cannot win.
+      if (upper(row.parent_status) === "LOST") return false;
+
       const eventId = text(row.espn_event_id);
       return !eventId || !finalEventIds.has(eventId);
     });
@@ -541,15 +555,23 @@ export default function LegsPage() {
 
   const undecidedCount = allCombined.filter((row) => {
     if (!isUndecided(row)) return false;
+    if (upper(row.parent_status) === "LOST") return false;
     const eventId = text(row.espn_event_id);
     return !eventId || !finalEventIds.has(eventId);
   }).length;
-  const wonCount = allCombined.filter((r) => statusOf(r) === "WON").length;
-  const lostCount = allCombined.filter((r) => statusOf(r) === "LOST").length;
+
   const liveGameCount = allGames.filter((g) => {
     const status = g.eventId ? gameStatuses[String(g.eventId)] : null;
     if (isFinalGameStatus(status)) return false;
-    return status?.state === "in" || (!status && g.isLive);
+
+    // A live game counts only if at least one still-relevant child leg belongs
+    // to a parent ticket that has not already lost.
+    const hasRelevantSweat = g.rows.some((row) =>
+      isUndecided(row) && upper(row.parent_status) !== "LOST"
+    );
+    if (!hasRelevantSweat) return false;
+
+    return isLiveGameStatus(status) || (!status && g.isLive);
   }).length;
   const betCount = new Set(filteredOccurrences.map((r) => Number(r.bet_row_id)).filter(Number.isFinite)).size;
 
@@ -564,11 +586,9 @@ export default function LegsPage() {
         <button className="refreshButton" onClick={load}>↻ Refresh</button>
       </header>
 
-      <section className="gamedaySummaryStrip">
+      <section className="gamedaySummaryStrip gamedaySummaryStripCompact">
         <div><span>Games Live</span><strong>{liveGameCount}</strong></div>
         <div><span>Still Sweating</span><strong>{undecidedCount}</strong></div>
-        <div><span>Won</span><strong>{wonCount}</strong></div>
-        <div><span>Lost</span><strong>{lostCount}</strong></div>
       </section>
 
       <div className="gamedayModeBar" role="group" aria-label="Active legs view">

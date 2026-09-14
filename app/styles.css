@@ -511,3 +511,14 @@ button, a, summary { -webkit-tap-highlight-color:transparent; }
 }
 
 .settledBadge { display:inline-flex; align-items:center; justify-content:center; border:1px solid #455464; background:rgba(86,101,117,.16); color:#b8c5d1; border-radius:999px; padding:3px 7px; font-size:9px; line-height:1; font-weight:900; letter-spacing:.06em; }
+
+
+/* v7.2 gameday summary: only the two actionable cards remain. */
+.gamedaySummaryStripCompact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (max-width: 640px) {
+  .gamedaySummaryStripCompact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
