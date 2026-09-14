@@ -82,8 +82,23 @@ function stateOf(row) {
 }
 
 function liveValue(row) {
-  const value = row.live_value;
-  return value === null || value === undefined || value === "" ? "—" : String(value);
+  const raw = row?.live_value;
+  if (raw === null || raw === undefined || raw === "") return "—";
+
+  const value = String(raw).trim();
+  const market = upper(row?.market);
+
+  if (market.includes("IN EACH QUARTER")) {
+    const matches = [...value.matchAll(/\bQ([1-4])\s*(-?\d+(?:\.\d+)?)/gi)];
+    if (matches.length) {
+      const quarters = new Map(matches.map((m) => [Number(m[1]), m[2]]));
+      if ([1, 2, 3, 4].every((q) => quarters.has(q))) {
+        return [1, 2, 3, 4].map((q) => quarters.get(q)).join("/");
+      }
+    }
+  }
+
+  return value;
 }
 
 function uniqueKey(row) {

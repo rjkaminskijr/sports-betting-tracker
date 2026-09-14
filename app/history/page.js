@@ -11,6 +11,32 @@ const cleanZero = (v) => Math.abs(n(v)) < 0.005 ? 0 : n(v);
 const money = (v) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cleanZero(v));
 const statusOf = (row) => String(row?.status || "").trim().toUpperCase();
 
+
+function displayLiveValue(row) {
+  const raw = row?.live_value ?? row?.current_value;
+  if (raw === null || raw === undefined || raw === "") return "";
+
+  const market = String(row?.market || "").toUpperCase();
+  const value = String(raw).trim();
+
+  // Quarter-based props are much easier to read as Q1/Q2/Q3/Q4 values
+  // than as a game total. update-live-bets v16.23 writes:
+  //   "Player Name: Q1 12, Q2 8, Q3 15, Q4 11"
+  // Display that compactly as:
+  //   12/8/15/11
+  if (market.includes("IN EACH QUARTER")) {
+    const matches = [...value.matchAll(/\bQ([1-4])\s*(-?\d+(?:\.\d+)?)/gi)];
+    if (matches.length) {
+      const quarters = new Map(matches.map((m) => [Number(m[1]), m[2]]));
+      if ([1, 2, 3, 4].every((q) => quarters.has(q))) {
+        return [1, 2, 3, 4].map((q) => quarters.get(q)).join("/");
+      }
+    }
+  }
+
+  return value;
+}
+
 function isBonusBet(bet) {
   const promo = String(bet?.promo || "").toUpperCase();
   return ["BONUS BET", "FREE BET", "FREEBET"].some((x) => promo.includes(x));
@@ -74,7 +100,7 @@ function Status({ value }) {
 
 function LegRow({ leg, onAction, busy }) {
   const s = statusOf(leg) || "PENDING";
-  const current = leg.live_value ?? leg.current_value ?? "";
+  const current = displayLiveValue(leg);
   return (
     <div className="historyLegRow">
       <div>

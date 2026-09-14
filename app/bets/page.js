@@ -17,6 +17,32 @@ const money = (value) => new Intl.NumberFormat("en-US", {
   currency: "USD"
 }).format(numberOrZero(value));
 
+
+function displayLiveValue(row) {
+  const raw = row?.live_value ?? row?.current_value;
+  if (raw === null || raw === undefined || raw === "") return "";
+
+  const market = String(row?.market || "").toUpperCase();
+  const value = String(raw).trim();
+
+  // Quarter-based props are much easier to read as Q1/Q2/Q3/Q4 values
+  // than as a game total. update-live-bets v16.23 writes:
+  //   "Player Name: Q1 12, Q2 8, Q3 15, Q4 11"
+  // Display that compactly as:
+  //   12/8/15/11
+  if (market.includes("IN EACH QUARTER")) {
+    const matches = [...value.matchAll(/\bQ([1-4])\s*(-?\d+(?:\.\d+)?)/gi)];
+    if (matches.length) {
+      const quarters = new Map(matches.map((m) => [Number(m[1]), m[2]]));
+      if ([1, 2, 3, 4].every((q) => quarters.has(q))) {
+        return [1, 2, 3, 4].map((q) => quarters.get(q)).join("/");
+      }
+    }
+  }
+
+  return value;
+}
+
 function odds(value) {
   if (value === null || value === undefined || value === "") return "—";
   const n = Number(value);
@@ -344,7 +370,7 @@ function BetCard({ bet, onCashOut }) {
                   </div>
                   <div className="activeLegState">
                     <span className={`legStateText legState-${visual.tone}`}>{visual.label}</span>
-                    {leg.live_value != null && leg.live_value !== "" && <strong>{String(leg.live_value)}</strong>}
+                    {displayLiveValue(leg) && <strong title={String(leg.live_value ?? "")}>{displayLiveValue(leg)}</strong>}
                     {legs.length > 1 && leg.odds != null && <small>{odds(leg.odds)}</small>}
                   </div>
                 </div>
