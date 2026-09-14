@@ -509,3 +509,5 @@ button, a, summary { -webkit-tap-highlight-color:transparent; }
   .marketPillValue { font-size:8px; }
   .gameLegCount { font-size:9px; }
 }
+
+.settledBadge { display:inline-flex; align-items:center; justify-content:center; border:1px solid #455464; background:rgba(86,101,117,.16); color:#b8c5d1; border-radius:999px; padding:3px 7px; font-size:9px; line-height:1; font-weight:900; letter-spacing:.06em; }

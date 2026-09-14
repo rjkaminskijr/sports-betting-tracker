@@ -21,6 +21,15 @@ function isUndecided(row) {
   return !isSettled(row);
 }
 
+function isFinalGameStatus(gameStatus) {
+  if (!gameStatus) return false;
+  const state = String(gameStatus.state || "").trim().toLowerCase();
+  if (state === "post") return true;
+  const readout = upper(gameStatus.readout);
+  const detail = upper(gameStatus.detail);
+  return readout.includes("FINAL") || detail.includes("FINAL");
+}
+
 function sportOf(row) {
   const raw = upper(row.parent_sport || row.sport);
   if (["NCAAF", "CFB", "COLLEGE FOOTBALL"].includes(raw)) return "CFB";
@@ -372,13 +381,15 @@ function TeamGameMarkets({ rows, showSettled }) {
 function GameGroup({ group, open, onToggle, gameStatus, showSettled }) {
   const playerGroups = buildPlayerGroups(group.rows);
   const teamRows = group.rows.filter((row) => !isPlayerLeg(row));
+  const gameIsFinal = isFinalGameStatus(gameStatus);
+  const gameIsLive = !gameIsFinal && (gameStatus?.state === "in" || group.isLive);
 
   return (
-    <section className={`gameGroup ${group.isLive ? "liveGameGroup" : ""} ${!group.hasUndecided ? "gameGroupSettled" : ""}`}>
+    <section className={`gameGroup ${gameIsLive ? "liveGameGroup" : ""} ${gameIsFinal || !group.hasUndecided ? "gameGroupSettled" : ""}`}>
       <button className="gameGroupHeader gameGroupToggle" type="button" onClick={onToggle} aria-expanded={open}>
         <div>
-          <div className="gameGroupTitleLine"><span>{group.sport}</span><h2>{group.game}</h2>{group.isLive && <span className="liveBadge">LIVE</span>}</div>
-          <small>{formatGameTime(group.eventTime)}</small>{group.isLive && gameStatus?.readout && <div className="gameLiveReadout">{gameStatus.readout}</div>}
+          <div className="gameGroupTitleLine"><span>{group.sport}</span><h2>{group.game}</h2>{gameIsLive && <span className="liveBadge">LIVE</span>}{gameIsFinal && <span className="settledBadge">FINAL</span>}</div>
+          <small>{formatGameTime(group.eventTime)}</small>{gameStatus?.readout && <div className="gameLiveReadout">{gameStatus.readout}</div>}
         </div>
         <div className="gameGroupHeaderRight">
           <span className="gameLegCount">{group.undecidedCount} sweat{group.undecidedCount === 1 ? "" : "s"}{showSettled && group.settledCount ? ` · ${group.settledCount} settled` : ""}</span>
@@ -459,8 +470,25 @@ export default function LegsPage() {
   }, [rows, search, sportsbook, sport, gameState, date]);
 
   const allCombined = useMemo(() => sortCombined(combineRows(filteredOccurrences)), [filteredOccurrences]);
-  const displayCombined = useMemo(() => viewMode === "SWEAT" ? allCombined.filter(isUndecided) : allCombined, [allCombined, viewMode]);
   const allGames = useMemo(() => buildGameGroups(allCombined), [allCombined]);
+
+  // ESPN game state is authoritative for the Sweat view. A stale PENDING/LIVE
+  // child leg from a completed game must never resurrect that game as a sweat.
+  const finalEventIds = useMemo(() => new Set(
+    Object.entries(gameStatuses)
+      .filter(([, status]) => isFinalGameStatus(status))
+      .map(([eventId]) => String(eventId))
+  ), [gameStatuses]);
+
+  const displayCombined = useMemo(() => {
+    if (viewMode !== "SWEAT") return allCombined;
+    return allCombined.filter((row) => {
+      if (!isUndecided(row)) return false;
+      const eventId = text(row.espn_event_id);
+      return !eventId || !finalEventIds.has(eventId);
+    });
+  }, [allCombined, viewMode, finalEventIds]);
+
   const games = useMemo(() => buildGameGroups(displayCombined), [displayCombined]);
 
   useEffect(() => {
@@ -480,15 +508,17 @@ export default function LegsPage() {
     });
   }, [games]);
 
-  const liveGameRefs = useMemo(() => games.filter((g) => g.isLive && g.eventId).map((g) => ({ eventId: String(g.eventId), sport: g.sport })), [games]);
+  const gameStatusRefs = useMemo(() => allGames
+    .filter((g) => g.eventId)
+    .map((g) => ({ eventId: String(g.eventId), sport: g.sport })), [allGames]);
 
   useEffect(() => {
-    if (!liveGameRefs.length) { setGameStatuses({}); return; }
+    if (!gameStatusRefs.length) { setGameStatuses({}); return; }
     let cancelled = false;
     async function loadGameStatuses() {
       try {
         const params = new URLSearchParams();
-        for (const game of liveGameRefs) params.append("game", `${game.eventId}|${game.sport}`);
+        for (const game of gameStatusRefs) params.append("game", `${game.eventId}|${game.sport}`);
         const { data } = await fetchJsonWithRetry(
           `/api/game-status?${params.toString()}`,
           { cache: "no-store" },
@@ -500,18 +530,27 @@ export default function LegsPage() {
           setGameStatuses(map);
         }
       } catch {
-        if (!cancelled) setGameStatuses({});
+        // Keep the last known ESPN state rather than re-exposing FINAL games
+        // because of one transient status request failure.
       }
     }
     loadGameStatuses();
     const id = setInterval(loadGameStatuses, 15000);
     return () => { cancelled = true; clearInterval(id); };
-  }, [liveGameRefs.map((g) => `${g.eventId}|${g.sport}`).join(",")]);
+  }, [gameStatusRefs.map((g) => `${g.eventId}|${g.sport}`).join(",")]);
 
-  const undecidedCount = allCombined.filter(isUndecided).length;
+  const undecidedCount = allCombined.filter((row) => {
+    if (!isUndecided(row)) return false;
+    const eventId = text(row.espn_event_id);
+    return !eventId || !finalEventIds.has(eventId);
+  }).length;
   const wonCount = allCombined.filter((r) => statusOf(r) === "WON").length;
   const lostCount = allCombined.filter((r) => statusOf(r) === "LOST").length;
-  const liveGameCount = allGames.filter((g) => g.isLive).length;
+  const liveGameCount = allGames.filter((g) => {
+    const status = g.eventId ? gameStatuses[String(g.eventId)] : null;
+    if (isFinalGameStatus(status)) return false;
+    return status?.state === "in" || (!status && g.isLive);
+  }).length;
   const betCount = new Set(filteredOccurrences.map((r) => Number(r.bet_row_id)).filter(Number.isFinite)).size;
 
   function clearFilters() {

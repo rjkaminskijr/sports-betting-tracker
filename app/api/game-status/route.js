@@ -56,7 +56,7 @@ function parseSummary(data, eventId) {
 export async function GET(request) {
   try {
     const url = new URL(request.url);
-    const rawGames = url.searchParams.getAll("game").slice(0, 20);
+    const rawGames = url.searchParams.getAll("game").slice(0, 50);
     const games = rawGames.map((raw) => {
       const [eventId, sport = "NFL"] = raw.split("|");
       return { eventId: String(eventId || "").trim(), sport };
