@@ -1,3 +1,7 @@
+import { supabaseRest } from "../lib/supabase-server";
+
+export const dynamic = "force-dynamic";
+
 const ACTIVE_STATUSES = new Set(["PENDING", "OPEN", "LIVE", "IN_PROGRESS"]);
 const SETTLED_STATUSES = new Set([
   "WON",
@@ -11,30 +15,84 @@ const SETTLED_STATUSES = new Set([
 ]);
 const NEUTRAL_STATUSES = new Set(["PUSH", "VOID", "VOIDED", "CANCELLED", "CANCELED"]);
 
-function appBaseUrl() {
-  return process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : "http://localhost:3000";
-}
-
 async function getDashboardData() {
-  const base = appBaseUrl();
-
   try {
-    const [betsRes, futuresRes] = await Promise.all([
-      fetch(`${base}/api/bets?limit=1000`, { cache: "no-store" }),
-      fetch(`${base}/api/futures`, { cache: "no-store" })
+    const [bets, futureRows] = await Promise.all([
+      supabaseRest("bets", {
+        searchParams: {
+          select: [
+            "id",
+            "sportsbook",
+            "bet_type",
+            "status",
+            "stake",
+            "to_pay",
+            "paid",
+            "promo",
+            "placed_at",
+            "source_captured_at",
+            "sport",
+            "headline",
+            "subtitle",
+            "event_name",
+            "current_odds",
+            "boosted_odds",
+            "original_odds",
+            "leg_count"
+          ].join(","),
+          order: "placed_at.desc",
+          limit: 1000
+        }
+      }),
+
+      supabaseRest("bet_legs", {
+        searchParams: {
+          select: "bet_row_id",
+          tracking_scope: "eq.SEASON",
+          order: "bet_row_id.asc",
+          limit: 1000
+        }
+      })
     ]);
 
-    const betsData = betsRes.ok ? await betsRes.json() : { rows: [] };
-    const futuresData = futuresRes.ok ? await futuresRes.json() : { betIds: [] };
+    const futureBetIds =
+      new Set(
+        (futureRows || [])
+          .map((row) =>
+            Number(
+              row.bet_row_id,
+            ),
+          )
+          .filter(
+            (id) =>
+              Number.isFinite(
+                id,
+              ),
+          ),
+      );
 
     return {
-      bets: betsData.rows || [],
-      futureBetIds: new Set((futuresData.betIds || []).map(Number))
+      bets:
+        bets || [],
+      futureBetIds,
+      loadError:
+        null,
     };
-  } catch {
-    return { bets: [], futureBetIds: new Set() };
+  } catch (error) {
+    console.error(
+      "Dashboard load failed:",
+      error,
+    );
+
+    return {
+      bets: [],
+      futureBetIds:
+        new Set(),
+      loadError:
+        error instanceof Error
+          ? error.message
+          : "Unable to load dashboard data.",
+    };
   }
 }
 
@@ -129,7 +187,7 @@ function Metric({ label, value, tone = "" }) {
 }
 
 export default async function Dashboard() {
-  const { bets, futureBetIds } = await getDashboardData();
+  const { bets, futureBetIds, loadError } = await getDashboardData();
   const gameBets = bets.filter((bet) => !futureBetIds.has(Number(bet.id)));
   const futureBets = bets.filter((bet) => futureBetIds.has(Number(bet.id)));
 
@@ -144,6 +202,15 @@ export default async function Dashboard() {
           <h1>Sports Bet Tracker</h1>
         </div>
       </header>
+
+      {loadError ? (
+        <section className="panel">
+          <div className="panelTitle"><h2>Dashboard unavailable</h2></div>
+          <p className="muted dashboardNote">
+            Unable to load Supabase data right now. Refresh the page in a moment.
+          </p>
+        </section>
+      ) : null}
 
       <section className="panel">
         <div className="panelTitle"><h2>Performance Overview</h2></div>
