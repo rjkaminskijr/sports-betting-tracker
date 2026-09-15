@@ -140,3 +140,7 @@ Active Bets now includes a parent-level Cash Out action. Enter the actual sports
 - Read-only page loads retry one transient network/Supabase gateway failure before showing an error.
 - 502/503/504 load failures now show a friendly temporary-connection message instead of raw Supabase gateway text.
 - Added `BET_UPLOAD_TOKEN` to `.env.example`; real secrets remain in `.env.local`, which is git-ignored.
+
+## v7.5 Active Legs ATD grouping
+- Active Legs now normalizes equivalent Anytime TD market labels to one semantic ATD group.
+- ATD grouping ignores stored line/direction differences, so duplicate exposure such as 1 + 4 + 1 Walker ATD legs renders as one `ATD ×6` pill when status/live value match.

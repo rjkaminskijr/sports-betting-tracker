@@ -101,13 +101,20 @@ function liveValue(row) {
   return value;
 }
 
+function isAnytimeTdMarket(row) {
+  const market = upper(row?.market);
+  return market.includes("ANYTIME TD") || market === "TOUCHDOWN SCORER" || market.includes("TO SCORE A TOUCHDOWN");
+}
+
 function uniqueKey(row) {
+  const anytimeTd = isAnytimeTdMarket(row);
+
   return [
     sportOf(row),
     text(row.selection),
-    text(row.market),
-    String(row.line_value ?? ""),
-    upper(row.direction),
+    anytimeTd ? "ATD" : text(row.market),
+    anytimeTd ? "" : String(row.line_value ?? ""),
+    anytimeTd ? "" : upper(row.direction),
     row.espn_event_id ? `event:${row.espn_event_id}` : `game:${gameOf(row)}`,
     statusOf(row),
     liveValue(row)
@@ -271,17 +278,57 @@ function overThresholdMet(row) {
   return Number.isFinite(line) && Number.isFinite(current) && current > line;
 }
 
+function positiveThresholdMet(row) {
+  if (isSettled(row)) return false;
+  const line = Number(row.line_value);
+  const current = Number(row.live_value);
+  if (!Number.isFinite(line) || !Number.isFinite(current)) return false;
+
+  const direction = effectiveDirection(row);
+  if (direction === "AT_LEAST") return current >= line;
+  if (direction === "OVER") return current > line;
+  return false;
+}
+
 function isPlayerLeg(row) {
   if (text(row.espn_athlete_id) || text(row.player_id) || text(row.athlete_id)) return true;
   const market = text(row.market);
   return /(receiving|rushing|passing|receptions?|touchdown|\btd\b|first to score|last to score|completions?|interceptions?|longest reception|longest rush)/i.test(market);
 }
 
-function directionShort(row) {
+function rawLegText(row) {
+  return text(row.raw_leg_text || row.raw_text || "");
+}
+
+function hasExplicitPlusThreshold(row) {
+  const line = Number(row.line_value);
+  if (!Number.isFinite(line)) return false;
+
+  const sources = [
+    rawLegText(row),
+    text(row.market),
+    text(row.selection)
+  ].filter(Boolean);
+
+  return sources.some((source) => {
+    const matches = [...String(source).matchAll(/(-?\d+(?:\.\d+)?)\s*\+/g)];
+    return matches.some((match) => Number(match[1]) === line);
+  });
+}
+
+function effectiveDirection(row) {
   const direction = upper(row.direction);
+  if (direction === "AT_LEAST" || hasExplicitPlusThreshold(row)) return "AT_LEAST";
+  if (direction === "OVER") return "OVER";
+  if (direction === "UNDER") return "UNDER";
+  return direction;
+}
+
+function directionShort(row) {
+  const direction = effectiveDirection(row);
   if (direction === "OVER") return "O";
   if (direction === "UNDER") return "U";
-  if (direction === "AT_LEAST") return "≥";
+  if (direction === "AT_LEAST") return "+";
   return direction;
 }
 
@@ -290,7 +337,12 @@ function compactMarketLabel(row) {
   const m = upper(market);
   const line = row.line_value;
   const dir = directionShort(row);
-  const prefix = dir && line !== null && line !== undefined && line !== "" ? `${dir}${line} ` : "";
+  const hasLine = line !== null && line !== undefined && line !== "";
+  const prefix = !hasLine || !dir
+    ? ""
+    : dir === "+"
+      ? `${line}+ `
+      : `${dir}${line} `;
 
   if (m.includes("FIRST TD") || m.includes("FIRST TOUCHDOWN") || m.includes("FIRST TO SCORE")) return "FTD";
   if (m.includes("LAST TD") || m.includes("LAST TOUCHDOWN") || m.includes("LAST TO SCORE")) return "LTD";
@@ -314,6 +366,7 @@ function badgeStatusClass(row) {
   if (status === "WON") return "marketPillWon";
   if (status === "LOST") return "marketPillLost";
   if (["PUSH", "VOID", "VOIDED", "CANCELLED", "CANCELED"].includes(status)) return "marketPillNeutral";
+  if (positiveThresholdMet(row) || overThresholdMet(row)) return "marketPillHit";
   if (row.state === "LIVE") return "marketPillLive";
   return "marketPillUpcoming";
 }
@@ -333,7 +386,7 @@ function MarketPill({ row, includeSelection = false }) {
       {includeSelection && <span className="marketPillSelection">{row.selection}</span>}
       <span className="marketPillLabel">{compactMarketLabel(row)}</span>
       {row.count > 1 && <span className="marketPillCount">×{row.count}</span>}
-      {overThresholdMet(row) && <span className="marketPillResult">✓</span>}
+      {(overThresholdMet(row) || positiveThresholdMet(row)) && <span className="marketPillResult">✓</span>}
       {status === "WON" && <span className="marketPillResult">✓</span>}
       {status === "LOST" && <span className="marketPillResult">✕</span>}
       {!isSettled(row) && value !== "—" && <span className="marketPillValue">{value}</span>}
