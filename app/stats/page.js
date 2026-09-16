@@ -301,7 +301,7 @@ function marketLabel(market) {
 
 function legStatus(leg) {
   return upper(
-    leg?.leg_status ??
+    leg?.status ??
     "PENDING"
   );
 }
@@ -682,7 +682,7 @@ async function getStatsData() {
                 "bet_row_id",
                 "selection",
                 "market",
-                "leg_status",
+                "status",
                 "tracking_scope"
               ].join(","),
               order:
