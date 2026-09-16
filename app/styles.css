@@ -593,3 +593,5 @@ button, a, summary { -webkit-tap-highlight-color:transparent; }
 @media (max-width:390px) {
   .bottomNav a { font-size:9px; }
 }
+
+.statsErrorDetail { margin:8px 0 0; color:#ff9aa6; font-size:10px; overflow-wrap:anywhere; }

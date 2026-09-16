@@ -302,7 +302,6 @@ function marketLabel(market) {
 function legStatus(leg) {
   return upper(
     leg?.leg_status ??
-    leg?.status ??
     "PENDING"
   );
 }
@@ -684,7 +683,6 @@ async function getStatsData() {
                 "selection",
                 "market",
                 "leg_status",
-                "status",
                 "tracking_scope"
               ].join(","),
               order:
@@ -1279,6 +1277,12 @@ export default async function StatsPage({
           <p className="muted">
             Unable to load Supabase statistics right now.
           </p>
+
+          {loadError ? (
+            <p className="statsErrorDetail">
+              {loadError}
+            </p>
+          ) : null}
         </section>
       ) : null}
 
