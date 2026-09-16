@@ -4,6 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchJsonWithRetry } from "../../lib/client-api";
 
 const REFRESH_MS = 30000;
+const FINAL_REVIEW_BUFFER_MS = 15 * 60 * 1000;
+const FINAL_FALLBACK_MAX_GAME_AGE_MS = 8 * 60 * 60 * 1000;
+const FINAL_SEEN_STORAGE_KEY = "sports-bet-tracker-final-seen-v1";
 const SETTLED = new Set(["WON", "LOST", "PUSH", "VOID", "VOIDED", "CANCELLED", "CANCELED", "CASHED_OUT"]);
 
 const upper = (value) => String(value || "").trim().toUpperCase();
@@ -501,6 +504,7 @@ export default function LegsPage() {
   const [viewMode, setViewMode] = useState("SWEAT");
   const [openGames, setOpenGames] = useState({});
   const [gameStatuses, setGameStatuses] = useState({});
+  const [finalSeenAt, setFinalSeenAt] = useState({});
 
   async function load() {
     try {
@@ -523,6 +527,33 @@ export default function LegsPage() {
     load();
     const id = setInterval(load, REFRESH_MS);
     return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    try {
+      const raw =
+        window.localStorage.getItem(
+          FINAL_SEEN_STORAGE_KEY,
+        );
+
+      if (!raw) return;
+
+      const parsed =
+        JSON.parse(
+          raw,
+        );
+
+      if (
+        parsed &&
+        typeof parsed === "object"
+      ) {
+        setFinalSeenAt(
+          parsed,
+        );
+      }
+    } catch {
+      // Local storage is only a convenience for preserving the review buffer.
+    }
   }, []);
 
   const sportsbooks = useMemo(() => [...new Set(rows.map((r) => text(r.parent_sportsbook || r.sportsbook)).filter(Boolean))].sort(), [rows]);
@@ -548,30 +579,242 @@ export default function LegsPage() {
   const allCombined = useMemo(() => sortCombined(combineRows(filteredOccurrences)), [filteredOccurrences]);
   const allGames = useMemo(() => buildGameGroups(allCombined), [allCombined]);
 
-  // ESPN game state is authoritative for the Sweat view. A stale PENDING/LIVE
-  // child leg from a completed game must never resurrect that game as a sweat.
+  // ESPN game state is authoritative for Sweat. FINAL games disappear there
+  // immediately, regardless of stale child-leg or parent-bet statuses.
   const finalEventIds = useMemo(() => new Set(
     Object.entries(gameStatuses)
       .filter(([, status]) => isFinalGameStatus(status))
       .map(([eventId]) => String(eventId))
   ), [gameStatuses]);
 
-  const displayCombined = useMemo(() => {
-    if (viewMode !== "SWEAT") return allCombined;
-    return allCombined.filter((row) => {
-      if (!isUndecided(row)) return false;
+  /*
+    All Legs gets a short postgame review window. The first time this device
+    observes an ESPN event as FINAL, remember that timestamp in localStorage.
+    That keeps the 15-minute buffer stable across refreshes.
 
-      // Once the parent ticket is LOST, its remaining child legs can continue
-      // updating in the backend for history, but they are no longer a gameday
-      // "sweat" because the wager cannot win.
-      if (upper(row.parent_status) === "LOST") return false;
+    For an old FINAL game with no prior timestamp (for example after deploying
+    this feature), do not resurrect it for 15 minutes merely because the page
+    was opened today. If kickoff was more than 8 hours ago, treat its review
+    window as already expired.
+  */
+  useEffect(() => {
+    const now =
+      Date.now();
 
-      const eventId = text(row.espn_event_id);
-      return !eventId || !finalEventIds.has(eventId);
+    setFinalSeenAt((current) => {
+      const next =
+        { ...current };
+
+      let changed =
+        false;
+
+      for (
+        const game
+        of allGames
+      ) {
+        const eventId =
+          text(
+            game.eventId,
+          );
+
+        if (
+          !eventId ||
+          !finalEventIds.has(
+            eventId,
+          ) ||
+          Number.isFinite(
+            Number(
+              next[eventId],
+            ),
+          )
+        ) {
+          continue;
+        }
+
+        const kickoff =
+          game.rows
+            .map(
+              (row) =>
+                eventTime(
+                  row,
+                )?.getTime() ??
+                null,
+            )
+            .find(
+              (value) =>
+                Number.isFinite(
+                  value,
+                ),
+            );
+
+        next[eventId] =
+          kickoff &&
+          now - kickoff >
+            FINAL_FALLBACK_MAX_GAME_AGE_MS
+            ? now -
+              FINAL_REVIEW_BUFFER_MS -
+              1
+            : now;
+
+        changed =
+          true;
+      }
+
+      if (
+        changed
+      ) {
+        try {
+          window.localStorage.setItem(
+            FINAL_SEEN_STORAGE_KEY,
+            JSON.stringify(
+              next,
+            ),
+          );
+        } catch {
+          // Ignore storage failures; in-memory timing still works.
+        }
+
+        return next;
+      }
+
+      return current;
     });
-  }, [allCombined, viewMode, finalEventIds]);
+  }, [allGames, finalEventIds]);
+
+  const finalEventsStillInReview = useMemo(() => {
+    const now =
+      Date.now();
+
+    return new Set(
+      [...finalEventIds]
+        .filter(
+          (eventId) => {
+            const seenAt =
+              Number(
+                finalSeenAt[
+                  eventId
+                ],
+              );
+
+            return (
+              Number.isFinite(
+                seenAt,
+              ) &&
+              now - seenAt <
+                FINAL_REVIEW_BUFFER_MS
+            );
+          },
+        ),
+    );
+  }, [finalEventIds, finalSeenAt, gameStatuses]);
+
+  const displayCombined = useMemo(() => {
+    return allCombined.filter((row) => {
+      const eventId =
+        text(
+          row.espn_event_id,
+        );
+
+      if (
+        viewMode ===
+        "SWEAT"
+      ) {
+        if (
+          !isUndecided(
+            row,
+          )
+        ) {
+          return false;
+        }
+
+        // Once the parent ticket is LOST, its remaining child legs can keep
+        // updating for history, but they are no longer a financial sweat.
+        if (
+          upper(
+            row.parent_status,
+          ) ===
+          "LOST"
+        ) {
+          return false;
+        }
+
+        return (
+          !eventId ||
+          !finalEventIds.has(
+            eventId,
+          )
+        );
+      }
+
+      // All Legs keeps FINAL games only during the 15-minute review buffer.
+      if (
+        eventId &&
+        finalEventIds.has(
+          eventId,
+        )
+      ) {
+        return finalEventsStillInReview.has(
+          eventId,
+        );
+      }
+
+      return true;
+    });
+  }, [
+    allCombined,
+    viewMode,
+    finalEventIds,
+    finalEventsStillInReview,
+  ]);
 
   const games = useMemo(() => buildGameGroups(displayCombined), [displayCombined]);
+
+  useEffect(() => {
+    const cutoff =
+      Date.now() -
+      7 * 24 * 60 * 60 * 1000;
+
+    setFinalSeenAt((current) => {
+      const entries =
+        Object.entries(
+          current,
+        );
+
+      const next =
+        Object.fromEntries(
+          entries.filter(
+            ([, value]) =>
+              Number(
+                value,
+              ) >=
+              cutoff,
+          ),
+        );
+
+      if (
+        Object.keys(
+          next,
+        ).length ===
+        entries.length
+      ) {
+        return current;
+      }
+
+      try {
+        window.localStorage.setItem(
+          FINAL_SEEN_STORAGE_KEY,
+          JSON.stringify(
+            next,
+          ),
+        );
+      } catch {
+        // Ignore storage failures.
+      }
+
+      return next;
+    });
+  }, [gameStatuses]);
+
 
   useEffect(() => {
     setOpenGames((current) => {
@@ -662,7 +905,7 @@ export default function LegsPage() {
       <div className="gamedayModeBar" role="group" aria-label="Active legs view">
         <button className={viewMode === "SWEAT" ? "gamedayModeActive" : ""} onClick={() => setViewMode("SWEAT")}>Sweat</button>
         <button className={viewMode === "ALL" ? "gamedayModeActive" : ""} onClick={() => setViewMode("ALL")}>All Legs</button>
-        <span>{viewMode === "SWEAT" ? "Undecided action only" : "Settled markets stay collapsed"}</span>
+        <span>{viewMode === "SWEAT" ? "Undecided action only" : "Final games stay 15 min for review"}</span>
       </div>
 
       <p className="lastUpdated">{updated ? `Database view updated ${updated.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "Loading database view…"}</p>
