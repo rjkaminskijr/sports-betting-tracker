@@ -391,7 +391,7 @@ function dateForTrend(bet) {
   );
 }
 
-function mondayStart(date) {
+function wednesdayStart(date) {
   const d =
     new Date(date);
 
@@ -406,10 +406,22 @@ function mondayStart(date) {
   const day =
     d.getDay();
 
+  /*
+    Weekly Stats run Wednesday through Tuesday.
+
+    getDay():
+      Sunday    = 0
+      Monday    = 1
+      Tuesday   = 2
+      Wednesday = 3
+      Thursday  = 4
+      Friday    = 5
+      Saturday  = 6
+  */
   const diff =
-    day === 0
-      ? -6
-      : 1 - day;
+    day >= 3
+      ? 3 - day
+      : -(day + 4);
 
   d.setDate(
     d.getDate() + diff
@@ -443,12 +455,12 @@ function periodKey(date, mode) {
     ).padStart(2, "0")}`;
   }
 
-  const monday =
-    mondayStart(parsed);
+  const wednesday =
+    wednesdayStart(parsed);
 
-  if (!monday) return null;
+  if (!wednesday) return null;
 
-  return monday
+  return wednesday
     .toISOString()
     .slice(0, 10);
 }
@@ -1500,7 +1512,7 @@ export default async function StatsPage({
         <div className="statsTrendStack">
           <TrendTable
             rows={weekly}
-            title="Weekly P/L"
+            title="Weekly P/L · Wed–Tue"
           />
 
           <TrendTable
