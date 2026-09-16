@@ -8,7 +8,8 @@ const items = [
   { href: "/bets", label: "Bets" },
   { href: "/legs", label: "Legs" },
   { href: "/futures", label: "Futures" },
-  { href: "/history", label: "History" }
+  { href: "/history", label: "History" },
+  { href: "/stats", label: "Stats" }
 ];
 
 export default function BottomNav() {

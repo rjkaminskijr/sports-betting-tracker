@@ -32,7 +32,7 @@ h2 { font-size:17px; margin:0; }
 .legRight { text-align:right; }
 .error,.empty,.skeleton { padding:16px; border-radius:14px; background:#171f29; border:1px solid #2a3746; margin:12px 0; }
 .error { border-color:#6a2e37; }
-.bottomNav { position:fixed; left:50%; bottom:calc(10px + env(safe-area-inset-bottom, 0px)); transform:translateX(-50%); width:min(calc(100% - 24px),520px); display:grid; grid-template-columns:repeat(5,1fr); background:rgba(16,22,30,.96); backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px); border:1px solid #273544; border-radius:18px; padding:7px; box-shadow:0 14px 40px rgba(0,0,0,.35); z-index:20; }
+.bottomNav { position:fixed; left:50%; bottom:calc(10px + env(safe-area-inset-bottom, 0px)); transform:translateX(-50%); width:min(calc(100% - 24px),620px); display:grid; grid-template-columns:repeat(6,1fr); background:rgba(16,22,30,.96); backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px); border:1px solid #273544; border-radius:18px; padding:7px; box-shadow:0 14px 40px rgba(0,0,0,.35); z-index:20; }
 .bottomNav a { text-align:center; min-height:44px; display:flex; align-items:center; justify-content:center; padding:9px 8px; border-radius:12px; font-weight:700; font-size:13px; }
 .bottomNav a:hover { background:#202b38; }
 @media (min-width:650px) { .metricGrid { grid-template-columns:repeat(4,1fr); } }
@@ -527,4 +527,69 @@ button, a, summary { -webkit-tap-highlight-color:transparent; }
   .gamedaySummaryStripCompact {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+
+/* v7.7 statistics */
+.statsHeader { align-items:flex-end; }
+.statsScopeToggle { display:flex; gap:5px; padding:4px; border:1px solid #273544; background:#0f161e; border-radius:999px; flex:0 0 auto; }
+.statsScopeToggle a { padding:7px 10px; border-radius:999px; color:#8397aa; font-size:10px; font-weight:800; white-space:nowrap; }
+.statsScopeToggle a.isActive { background:#203044; color:#f3f7fa; }
+.statsMetricGrid { margin-bottom:0; }
+.statsMetric strong { font-size:19px; }
+.statsDetails { padding:0; overflow:hidden; }
+.statsDetails > summary { list-style:none; cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:15px 16px; }
+.statsDetails > summary::-webkit-details-marker { display:none; }
+.statsDetails > summary strong { font-size:15px; }
+.statsDetails > summary span { color:#7790a6; font-size:10px; border:1px solid #2a3949; border-radius:999px; padding:3px 7px; }
+.statsDetails[open] > summary { border-bottom:1px solid #202c39; }
+.statsDetails > .statsTableWrap,
+.statsDetails > .statsSubnote,
+.statsDetails > .statsTrendStack,
+.statsDetails > .statsExtremeList,
+.statsDetails > .statsExposureStack { margin:14px 16px 16px; }
+.statsSubnote { color:#7f93a6 !important; font-size:10px; margin-top:12px !important; margin-bottom:10px !important; }
+.statsTableWrap { overflow-x:auto; border:1px solid #202c39; border-radius:12px; background:#0d141b; }
+.statsTable { width:100%; border-collapse:collapse; min-width:620px; font-size:10px; }
+.statsTable th { color:#7f93a7; text-align:right; font-size:9px; letter-spacing:.04em; text-transform:uppercase; font-weight:800; padding:9px 10px; border-bottom:1px solid #202c39; background:#111922; white-space:nowrap; }
+.statsTable th:first-child { text-align:left; }
+.statsTable td { padding:9px 10px; border-bottom:1px solid #18232e; text-align:right; color:#c3cfda; white-space:nowrap; }
+.statsTable tr:last-child td { border-bottom:0; }
+.statsTable td:first-child { text-align:left; white-space:normal; color:#e8edf2; }
+.statsTable td strong { font-size:10px; }
+.statsPositive { color:#62e3a8 !important; }
+.statsNegative { color:#ff8b98 !important; }
+.statsTrendStack, .statsExposureStack { display:grid; gap:16px; }
+.statsExposureStack > div { display:grid; gap:7px; }
+.statsExposureStack h3 { margin:0; color:#a9b8c7; font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
+.statsExtremeList { display:grid; gap:8px; }
+.statsExtremeRow { display:grid; grid-template-columns:90px minmax(0,1fr) minmax(0,1fr); gap:8px; padding:10px; border:1px solid #202c39; border-radius:11px; background:#0d141b; align-items:center; }
+.statsExtremeRow > span { color:#8094a7; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; }
+.statsExtremeRow > div { display:grid; gap:2px; min-width:0; }
+.statsExtremeRow small { color:#70869a; font-size:9px; }
+.statsExtremeRow strong { font-size:10px; overflow-wrap:anywhere; }
+@media (min-width:650px) {
+  .statsMetricGrid { grid-template-columns:repeat(4,1fr); }
+}
+@media (max-width:620px) {
+  .statsHeader { display:grid; gap:12px; }
+  .statsScopeToggle { width:100%; display:grid; grid-template-columns:1fr 1fr; }
+  .statsScopeToggle a { text-align:center; }
+  .bottomNav { grid-template-columns:repeat(6,1fr); }
+  .bottomNav a { font-size:10px; padding-left:2px; padding-right:2px; }
+  .statsTableWrap { overflow:visible; border:0; background:transparent; }
+  .statsTable { min-width:0; display:block; }
+  .statsTable thead { display:none; }
+  .statsTable tbody { display:grid; gap:8px; }
+  .statsTable tr { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px 10px; padding:10px; border:1px solid #202c39; border-radius:11px; background:#0d141b; }
+  .statsTable td { display:grid; gap:2px; padding:0; border:0; text-align:left; white-space:normal; min-width:0; }
+  .statsTable td:first-child { grid-column:1 / -1; padding-bottom:3px; border-bottom:1px solid #18232e; }
+  .statsTable td::before { content:attr(data-label); color:#6f8396; font-size:8px; text-transform:uppercase; letter-spacing:.05em; }
+  .statsTable td:first-child::before { display:none; }
+  .statsTable td strong { font-size:11px; }
+  .statsExtremeRow { grid-template-columns:1fr; }
+  .statsExtremeRow > span { padding-bottom:3px; border-bottom:1px solid #18232e; }
+}
+@media (max-width:390px) {
+  .bottomNav a { font-size:9px; }
 }
