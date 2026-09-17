@@ -27,6 +27,10 @@ function parseSummary(data, eventId) {
   const clock = status?.displayClock || "";
   const period = quarterLabel(status?.period);
   const detail = status?.type?.shortDetail || status?.type?.detail || "";
+  const scheduledDate = competition?.date || header?.date || data?.gameInfo?.date;
+  const startTime = scheduledDate && !Number.isNaN(Date.parse(scheduledDate))
+    ? new Date(scheduledDate).toISOString()
+    : null;
 
   let readout = "";
   if (away && home) {
@@ -43,6 +47,7 @@ function parseSummary(data, eventId) {
 
   return {
     eventId: String(eventId),
+    startTime,
     state,
     readout,
     away: away ? { name: teamLabel(away), score: String(score(away)) } : null,
@@ -56,7 +61,7 @@ function parseSummary(data, eventId) {
 export async function GET(request) {
   try {
     const url = new URL(request.url);
-    const rawGames = url.searchParams.getAll("game").slice(0, 50);
+    const rawGames = url.searchParams.getAll("game").slice(0, 20);
     const games = rawGames.map((raw) => {
       const [eventId, sport = "NFL"] = raw.split("|");
       return { eventId: String(eventId || "").trim(), sport };

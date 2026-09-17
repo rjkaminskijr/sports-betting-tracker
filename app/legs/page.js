@@ -171,7 +171,7 @@ function sortCombined(rows) {
   });
 }
 
-function buildGameGroups(rows) {
+function buildGameGroups(rows, gameStatuses = {}) {
   const map = new Map();
 
   for (const row of sortCombined(rows)) {
@@ -214,6 +214,10 @@ function buildGameGroups(rows) {
     return {
       ...group,
       game: preferredGame || group.game,
+      // Some imported legs have no event_time even after ESPN has matched the
+      // event. Use ESPN's scheduled kickoff for both the card and its order.
+      eventTime: [group.eventTime, gameStatuses[String(group.eventId || "")]?.startTime]
+        .find((value) => value && !Number.isNaN(new Date(value).getTime())) || null,
       gameLabels: undefined,
       undecidedCount,
       settledCount,
@@ -767,7 +771,7 @@ export default function LegsPage() {
     finalEventsStillInReview,
   ]);
 
-  const games = useMemo(() => buildGameGroups(displayCombined), [displayCombined]);
+  const games = useMemo(() => buildGameGroups(displayCombined, gameStatuses), [displayCombined, gameStatuses]);
 
   useEffect(() => {
     const cutoff =
