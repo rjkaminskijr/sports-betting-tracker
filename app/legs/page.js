@@ -114,8 +114,8 @@ function uniqueKey(row) {
 
   return [
     sportOf(row),
-    text(row.selection),
-    anytimeTd ? "ATD" : text(row.market),
+    upper(row.selection),
+    anytimeTd ? "ATD" : upper(row.market),
     anytimeTd ? "" : String(row.line_value ?? ""),
     anytimeTd ? "" : upper(row.direction),
     row.espn_event_id ? `event:${row.espn_event_id}` : `game:${gameOf(row)}`,
@@ -354,6 +354,8 @@ function compactMarketLabel(row) {
   if (m.includes("FIRST TD") || m.includes("FIRST TOUCHDOWN") || m.includes("FIRST TO SCORE")) return "FTD";
   if (m.includes("LAST TD") || m.includes("LAST TOUCHDOWN") || m.includes("LAST TO SCORE")) return "LTD";
   if (m.includes("ANYTIME TD") || m === "TOUCHDOWN SCORER" || m.includes("TO SCORE A TOUCHDOWN")) return "ATD";
+  if (m.includes("RUSHING") && m.includes("RECEIVING YARD")) return `${prefix}Rush + Rec Yds`.trim();
+  if (m.includes("PASSING") && m.includes("RUSHING YARD")) return `${prefix}Pass + Rush Yds`.trim();
   if (m.includes("RECEIVING YARD")) return `${prefix}Rec Yds`.trim();
   if (m.includes("RUSHING YARD")) return `${prefix}Rush Yds`.trim();
   if (m.includes("PASSING YARD")) return `${prefix}Pass Yds`.trim();
