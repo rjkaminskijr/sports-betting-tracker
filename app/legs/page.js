@@ -380,7 +380,7 @@ function MarketPill({ row, includeSelection = false }) {
   const value = friendlyLiveValue(row);
   const status = statusOf(row);
   const label = includeSelection ? teamGamePillLabel(row) : compactMarketLabel(row);
-  const showValue = !isSettled(row) && value !== "—" && (!includeSelection || row.state === "LIVE");
+  const showValue = !includeSelection && !isSettled(row) && value !== "—";
   const title = [
     row.selection,
     row.market,
@@ -395,7 +395,7 @@ function MarketPill({ row, includeSelection = false }) {
       {isEarlyWinLive(row) && <span className="marketPillResult">✓ WON (LIVE)</span>}
       {status === "WON" && <span className="marketPillResult">✓</span>}
       {status === "LOST" && <span className="marketPillResult">✕</span>}
-      {showValue && <span className="marketPillValue">{includeSelection ? ` · live ${value}` : value}</span>}
+      {showValue && <span className="marketPillValue">{value}</span>}
     </span>
   );
 }
