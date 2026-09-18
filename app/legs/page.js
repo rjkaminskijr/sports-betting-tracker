@@ -335,11 +335,35 @@ function compactMarketLabel(row) {
   if (m.includes("PASSING TD")) return `${prefix}Pass TDs`.trim();
   if (m.includes("INTERCEPTION")) return `${prefix}INT`.trim();
   if (m.includes("MONEYLINE") || m === "ML") return "ML";
-  if (m.includes("SPREAD")) return `${text(row.selection)}${line !== null && line !== undefined && line !== "" ? ` ${line}` : ""}`.trim();
+  if (m.includes("SPREAD")) return text(row.selection) || `${line}`;
   if (m.includes("TEAM TOTAL")) return `${prefix}Team Total`.trim();
   if (isGameOrTeamTotal(row)) return `${prefix}Total`.trim();
   if (prefix) return `${prefix}${market}`.trim();
   return market || text(row.selection) || "Market";
+}
+
+function teamGamePillLabel(row) {
+  const selection = text(row.selection);
+  const market = text(row.market);
+  const normalizedMarket = upper(market);
+  const hasLine = row.line_value !== null && row.line_value !== undefined && row.line_value !== "";
+  const direction = effectiveDirection(row);
+  const threshold = hasLine
+    ? `${direction === "OVER" ? "Over" : direction === "UNDER" ? "Under" : direction === "AT_LEAST" ? "At least" : ""} ${row.line_value}`.trim()
+    : "";
+
+  if (normalizedMarket.includes("SPREAD")) return selection || compactMarketLabel(row);
+  if (normalizedMarket.includes("TEAM TOTAL")) {
+    const team = market.replace(/\s+TEAM\s+(?:ALT(?:ERNATE)?\s+)?TOTAL(?:\s+.*)?$/i, "").trim();
+    const name = team.replace(/\b[A-Z]{5,}\b/g, (word) => word[0] + word.slice(1).toLowerCase());
+    return `${name || "Team"} team total${threshold ? ` · ${threshold}` : ""}`;
+  }
+  if (isGameOrTeamTotal(row)) return `Game total${threshold ? ` · ${threshold}` : ""}`;
+  if (normalizedMarket.includes("MONEYLINE") || normalizedMarket === "ML") {
+    return [selection, "moneyline"].filter(Boolean).join(" ");
+  }
+  const detail = compactMarketLabel(row);
+  return selection && selection !== detail ? `${selection} · ${detail}` : selection || detail;
 }
 
 function badgeStatusClass(row) {
@@ -355,6 +379,8 @@ function badgeStatusClass(row) {
 function MarketPill({ row, includeSelection = false }) {
   const value = friendlyLiveValue(row);
   const status = statusOf(row);
+  const label = includeSelection ? teamGamePillLabel(row) : compactMarketLabel(row);
+  const showValue = !isSettled(row) && value !== "—" && (!includeSelection || row.state === "LIVE");
   const title = [
     row.selection,
     row.market,
@@ -364,13 +390,12 @@ function MarketPill({ row, includeSelection = false }) {
 
   return (
     <span className={`marketPill ${badgeStatusClass(row)}`} title={title}>
-      {includeSelection && <span className="marketPillSelection">{row.selection}</span>}
-      <span className="marketPillLabel">{compactMarketLabel(row)}</span>
+      <span className="marketPillLabel">{label}</span>
       {row.count > 1 && <span className="marketPillCount">×{row.count}</span>}
       {isEarlyWinLive(row) && <span className="marketPillResult">✓ WON (LIVE)</span>}
       {status === "WON" && <span className="marketPillResult">✓</span>}
       {status === "LOST" && <span className="marketPillResult">✕</span>}
-      {!isSettled(row) && value !== "—" && <span className="marketPillValue">{value}</span>}
+      {showValue && <span className="marketPillValue">{includeSelection ? ` · live ${value}` : value}</span>}
     </span>
   );
 }

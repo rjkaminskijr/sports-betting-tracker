@@ -1,9 +1,5 @@
-WON (LIVE) display-only update
+Active Legs badge appearance fix
 
-Copy app/legs/page.js, app/bets/page.js and lib/early-win.js into the matching paths in your Next.js repository.
-No Supabase function, API, settlement, payout or refresh changes are included.
-WON (LIVE) requires a live leg and a numeric live value. Official settled statuses take precedence.
-Receptions: OVER > line; X+ / AT_LEAST >= line.
-Individual passing/rushing/receiving yards: >= line + 10.
-Anytime TD: >= 1. OVER game/team point totals: > line.
-Other markets are deliberately unchanged.
+Replace app/legs/page.js in the sports-betting-tracker repository with the file at the same path in this ZIP.
+
+Team/game badges now show one readable label. Pregame zero values are hidden; live values appear only while the game is live. Player badges, early-win rules, bet settlement, and payouts are unchanged.
