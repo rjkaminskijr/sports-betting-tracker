@@ -279,7 +279,7 @@ function StatusPill({ status }) {
   return <span className={`statusPill status-${normalized.toLowerCase().replaceAll("_", "-")}`}>{normalized}</span>;
 }
 
-function BetCard({ bet, onCashOut }) {
+function BetCard({ bet, onCashOut, onVoidLeg, voidBusyId }) {
   const legs = bet.legs || [];
   const displayedOdds = bet.current_odds ?? bet.original_odds ?? bet.boosted_odds;
   const pnl = profitLoss(bet);
@@ -372,6 +372,16 @@ function BetCard({ bet, onCashOut }) {
                     <span className={`legStateText legState-${visual.tone}`}>{visual.label}</span>
                     {displayLiveValue(leg) && <strong title={String(leg.live_value ?? "")}>{displayLiveValue(leg)}</strong>}
                     {legs.length > 1 && leg.odds != null && <small>{odds(leg.odds)}</small>}
+                    {!['VOID', 'VOIDED'].includes(statusOf(leg)) && (
+                      <button
+                        type="button"
+                        className="dangerGhost"
+                        disabled={voidBusyId !== null}
+                        onClick={() => onVoidLeg(leg)}
+                      >
+                        {voidBusyId === Number(leg.id) ? 'Saving…' : 'Mark VOID'}
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -438,6 +448,7 @@ export default function BetsPage() {
   const [error, setError] = useState("");
   const [lastUpdated, setLastUpdated] = useState(null);
   const [notice, setNotice] = useState("");
+  const [voidBusyId, setVoidBusyId] = useState(null);
 
   const [search, setSearch] = useState("");
   const [sportsbook, setSportsbook] = useState("");
@@ -483,6 +494,33 @@ export default function BetsPage() {
     setRows((current) => current.filter((row) => Number(row.id) !== Number(bet.id)));
     setNotice(`Bet ${bet.id} cashed out for ${money(amount)}. It has moved to History.`);
     setLastUpdated(new Date());
+  }
+
+  async function voidLeg(leg) {
+    const legId = Number(leg?.id);
+    if (!Number.isSafeInteger(legId) || legId <= 0) {
+      setError('Invalid leg ID.');
+      return;
+    }
+    if (!window.confirm(`Mark ${leg.selection || 'this leg'} VOID? Only do this after the sportsbook confirms the void.`)) return;
+    setVoidBusyId(legId);
+    setError('');
+    setNotice('');
+    try {
+      const response = await fetch('/api/history/action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'void', legId })
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || 'Unable to void leg');
+      setNotice(`Leg ${legId} marked VOID. Parent settlement recalculation requested.`);
+      await load();
+    } catch (error) {
+      setError(error?.message || 'Unable to void leg.');
+    } finally {
+      setVoidBusyId(null);
+    }
   }
 
   const options = useMemo(() => ({
@@ -582,7 +620,7 @@ export default function BetsPage() {
 
       {!loading && !error && (
         <section className="cardList activeBetList">
-          {filtered.map((bet) => <BetCard bet={bet} key={bet.id} onCashOut={cashOutBet} />)}
+          {filtered.map((bet) => <BetCard bet={bet} key={bet.id} onCashOut={cashOutBet} onVoidLeg={voidLeg} voidBusyId={voidBusyId} />)}
         </section>
       )}
 

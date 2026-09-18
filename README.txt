@@ -1,0 +1,1 @@
+Replace app/bets/page.js in GitHub with the included file and commit to main. The UI calls the existing /api/history/action endpoint. Confirm that the scheduled updater preserves manual VOID statuses before relying on it; no backend changes are included. Do not use the button until the sportsbook confirms a void.
