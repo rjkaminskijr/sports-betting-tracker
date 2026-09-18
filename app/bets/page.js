@@ -279,7 +279,7 @@ function StatusPill({ status }) {
   return <span className={`statusPill status-${normalized.toLowerCase().replaceAll("_", "-")}`}>{normalized}</span>;
 }
 
-function BetCard({ bet, onCashOut, onVoidLeg, voidBusyId }) {
+function BetCard({ bet, onCashOut, onSettleBet, onVoidLeg, voidBusyId }) {
   const legs = bet.legs || [];
   const displayedOdds = bet.current_odds ?? bet.original_odds ?? bet.boosted_odds;
   const pnl = profitLoss(bet);
@@ -290,6 +290,29 @@ function BetCard({ bet, onCashOut, onVoidLeg, voidBusyId }) {
   const [cashOutAmount, setCashOutAmount] = useState("");
   const [cashOutBusy, setCashOutBusy] = useState(false);
   const [cashOutError, setCashOutError] = useState("");
+
+  const [settleOpen, setSettleOpen] = useState(false);
+  const [settleStatus, setSettleStatus] = useState("WON");
+  const [settlePaid, setSettlePaid] = useState("");
+  const [settleBusy, setSettleBusy] = useState(false);
+  const [settleError, setSettleError] = useState("");
+
+  async function submitSettlement() {
+    const paid = Number(settlePaid);
+    if (!settlePaid.trim() || !Number.isFinite(paid) || paid < 0) {
+      setSettleError("Enter the actual total amount returned by the sportsbook (zero is allowed).");
+      return;
+    }
+    if (!window.confirm(`Settle Bet ${bet.id} as ${settleStatus} with ${money(paid)} returned? This is NOT a cash out.`)) return;
+    setSettleBusy(true);
+    setSettleError("");
+    try {
+      await onSettleBet(bet, settleStatus, paid);
+    } catch (error) {
+      setSettleError(error?.message || "Unable to settle bet.");
+      setSettleBusy(false);
+    }
+  }
 
   async function submitCashOut() {
     const amount = Number(cashOutAmount);
@@ -388,6 +411,32 @@ function BetCard({ bet, onCashOut, onVoidLeg, voidBusyId }) {
             })}
           </div>
         ) : <div className="emptyInline">No legs stored for this bet.</div>}
+
+        <div className="cashOutSection">
+          {!settleOpen ? (
+            <button className="cashOutButton" type="button" onClick={() => setSettleOpen(true)}>Settle Bet</button>
+          ) : (
+            <div className="cashOutPanel">
+              <strong>Settle Bet (not a cash out)</strong>
+              <small>Use the sportsbook's confirmed result and total amount returned, including any returned stake. Individual legs will not be changed.</small>
+              <label>Final result
+                <select value={settleStatus} onChange={(event) => setSettleStatus(event.target.value)} disabled={settleBusy}>
+                  <option value="WON">WON</option>
+                  <option value="LOST">LOST</option>
+                  <option value="VOID">VOID (entire bet)</option>
+                </select>
+              </label>
+              <label>Total amount returned ($)
+                <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="0.00" value={settlePaid} onChange={(event) => setSettlePaid(event.target.value)} disabled={settleBusy} />
+              </label>
+              <div className="cashOutActions">
+                <button type="button" className="textButton" disabled={settleBusy} onClick={() => { setSettleOpen(false); setSettleError(""); }}>Cancel</button>
+                <button type="button" className="cashOutConfirmButton" disabled={settleBusy} onClick={submitSettlement}>{settleBusy ? "Saving…" : "Confirm Settlement"}</button>
+              </div>
+              {settleError && <div className="cashOutError">{settleError}</div>}
+            </div>
+          )}
+        </div>
 
         <div className="cashOutSection">
           {!cashOutOpen ? (
@@ -493,6 +542,21 @@ export default function BetsPage() {
 
     setRows((current) => current.filter((row) => Number(row.id) !== Number(bet.id)));
     setNotice(`Bet ${bet.id} cashed out for ${money(amount)}. It has moved to History.`);
+    setLastUpdated(new Date());
+  }
+
+  async function settleBet(bet, status, paid) {
+    setError("");
+    setNotice("");
+    const response = await fetch("/api/active-bets/settle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ betId: Number(bet.id), status, paid })
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "Unable to settle bet");
+    setRows((current) => current.filter((row) => Number(row.id) !== Number(bet.id)));
+    setNotice(`Bet ${bet.id} settled as ${status} for ${money(paid)}. It has moved to History.`);
     setLastUpdated(new Date());
   }
 
@@ -620,7 +684,7 @@ export default function BetsPage() {
 
       {!loading && !error && (
         <section className="cardList activeBetList">
-          {filtered.map((bet) => <BetCard bet={bet} key={bet.id} onCashOut={cashOutBet} onVoidLeg={voidLeg} voidBusyId={voidBusyId} />)}
+          {filtered.map((bet) => <BetCard bet={bet} key={bet.id} onCashOut={cashOutBet} onSettleBet={settleBet} onVoidLeg={voidLeg} voidBusyId={voidBusyId} />)}
         </section>
       )}
 
