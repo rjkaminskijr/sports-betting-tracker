@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { fetchJsonWithRetry } from "../../lib/client-api";
+import { isEarlyWinLive } from "../../lib/early-win";
 
 const REFRESH_MS = 30000;
 const FINAL_REVIEW_BUFFER_MS = 15 * 60 * 1000;
@@ -268,35 +269,6 @@ function isGameOrTeamTotal(row) {
   );
 }
 
-function overThresholdMet(row) {
-  if (!isGameOrTeamTotal(row)) return false;
-  const direction = upper(row.direction);
-  const selection = upper(row.selection);
-  const isOver = direction === "OVER" || /^OVER\b/.test(selection);
-  if (!isOver) return false;
-
-  let line = Number(row.line_value);
-  if (!Number.isFinite(line)) {
-    const match = text(row.selection).match(/\bOver\s*\(?([0-9]+(?:\.[0-9]+)?)\)?/i);
-    line = match ? Number(match[1]) : NaN;
-  }
-
-  const current = Number(row.live_value);
-  return Number.isFinite(line) && Number.isFinite(current) && current > line;
-}
-
-function positiveThresholdMet(row) {
-  if (isSettled(row)) return false;
-  const line = Number(row.line_value);
-  const current = Number(row.live_value);
-  if (!Number.isFinite(line) || !Number.isFinite(current)) return false;
-
-  const direction = effectiveDirection(row);
-  if (direction === "AT_LEAST") return current >= line;
-  if (direction === "OVER") return current > line;
-  return false;
-}
-
 function isPlayerLeg(row) {
   if (text(row.espn_athlete_id) || text(row.player_id) || text(row.athlete_id)) return true;
   const market = text(row.market);
@@ -375,7 +347,7 @@ function badgeStatusClass(row) {
   if (status === "WON") return "marketPillWon";
   if (status === "LOST") return "marketPillLost";
   if (["PUSH", "VOID", "VOIDED", "CANCELLED", "CANCELED"].includes(status)) return "marketPillNeutral";
-  if (positiveThresholdMet(row) || overThresholdMet(row)) return "marketPillHit";
+  if (isEarlyWinLive(row)) return "marketPillHit";
   if (row.state === "LIVE") return "marketPillLive";
   return "marketPillUpcoming";
 }
@@ -395,7 +367,7 @@ function MarketPill({ row, includeSelection = false }) {
       {includeSelection && <span className="marketPillSelection">{row.selection}</span>}
       <span className="marketPillLabel">{compactMarketLabel(row)}</span>
       {row.count > 1 && <span className="marketPillCount">×{row.count}</span>}
-      {(overThresholdMet(row) || positiveThresholdMet(row)) && <span className="marketPillResult">✓</span>}
+      {isEarlyWinLive(row) && <span className="marketPillResult">✓ WON (LIVE)</span>}
       {status === "WON" && <span className="marketPillResult">✓</span>}
       {status === "LOST" && <span className="marketPillResult">✕</span>}
       {!isSettled(row) && value !== "—" && <span className="marketPillValue">{value}</span>}

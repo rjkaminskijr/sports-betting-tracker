@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { fetchJsonWithRetry } from "../../lib/client-api";
+import { isEarlyWinLive } from "../../lib/early-win";
 
 const ACTIVE_STATUSES = new Set(["PENDING", "OPEN", "LIVE", "IN_PROGRESS"]);
 const SETTLED_STATUSES = new Set(["WON", "LOST", "PUSH", "VOID", "VOIDED", "CANCELLED", "CANCELED", "CASHED_OUT"]);
@@ -239,15 +240,17 @@ function legStatusVisual(leg) {
   if (status === "WON") return { icon: "✓", label: "WON", tone: "won" };
   if (status === "LOST") return { icon: "✕", label: "LOST", tone: "lost" };
   if (NEUTRAL_STATUSES.has(status)) return { icon: "↔", label: status, tone: "neutral" };
+  if (isEarlyWinLive(leg)) return { icon: "✓", label: "WON (LIVE)", tone: "wonLive" };
   if (liveState === "LIVE" || ["LIVE", "IN_PROGRESS"].includes(status)) return { icon: "●", label: "LIVE", tone: "live" };
   return { icon: "○", label: "PENDING", tone: "pending" };
 }
 
 function readableProgress(legs = []) {
-  let won = 0, lost = 0, neutral = 0, live = 0, pending = 0;
+  let won = 0, wonLive = 0, lost = 0, neutral = 0, live = 0, pending = 0;
   for (const leg of legs) {
     const v = legStatusVisual(leg);
     if (v.tone === "won") won += 1;
+    else if (v.tone === "wonLive") wonLive += 1;
     else if (v.tone === "lost") lost += 1;
     else if (v.tone === "neutral") neutral += 1;
     else if (v.tone === "live") live += 1;
@@ -255,6 +258,7 @@ function readableProgress(legs = []) {
   }
   const parts = [];
   if (won) parts.push(`${won} Won`);
+  if (wonLive) parts.push(`${wonLive} Won (Live)`);
   if (lost) parts.push(`${lost} Lost`);
   if (live) parts.push(`${live} Live`);
   if (pending) parts.push(`${pending} Pending`);
@@ -384,15 +388,15 @@ function BetCard({ bet, onCashOut, onSettleBet, onVoidLeg, voidBusyId }) {
             {legs.map((leg) => {
               const visual = legStatusVisual(leg);
               return (
-                <div className={`activeLegRow legTone-${visual.tone}`} key={leg.id}>
-                  <div className={`legStatusIcon legStatusIcon-${visual.tone}`} title={visual.label}>{visual.icon}</div>
+                <div className={`activeLegRow legTone-${visual.tone === "wonLive" ? "won" : visual.tone}`} key={leg.id}>
+                  <div className={`legStatusIcon legStatusIcon-${visual.tone === "wonLive" ? "won" : visual.tone}`} title={visual.label}>{visual.icon}</div>
                   <div className="activeLegMain">
                     <strong>{leg.selection || "Selection unavailable"}</strong>
                     <small>{gameDetail(leg)}{leg.event_time ? ` · ${formatGameTime(leg.event_time)}` : ""}</small>
                     <span>{leg.market || "Market unavailable"}{leg.line_value != null ? ` · ${leg.line_value}` : ""}</span>
                   </div>
                   <div className="activeLegState">
-                    <span className={`legStateText legState-${visual.tone}`}>{visual.label}</span>
+                    <span className={`legStateText legState-${visual.tone === "wonLive" ? "won" : visual.tone}`}>{visual.label}</span>
                     {displayLiveValue(leg) && <strong title={String(leg.live_value ?? "")}>{displayLiveValue(leg)}</strong>}
                     {legs.length > 1 && leg.odds != null && <small>{odds(leg.odds)}</small>}
                     {!['VOID', 'VOIDED'].includes(statusOf(leg)) && (
