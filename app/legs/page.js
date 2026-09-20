@@ -276,6 +276,7 @@ function isGameOrTeamTotal(row) {
 }
 
 function isPlayerLeg(row) {
+  if (upper(row.market) === "PLAYER QUARTER SPECIALS") return false;
   if (text(row.espn_athlete_id) || text(row.player_id) || text(row.athlete_id)) return true;
   const market = text(row.market);
   return /(receiving|rushing|passing|receptions?|touchdown|\btd\b|first to score|last to score|completions?|interceptions?|longest reception|longest rush)/i.test(market);
@@ -378,17 +379,17 @@ function teamGamePillLabel(row) {
   return selection && selection !== detail ? `${selection} · ${detail}` : selection || detail;
 }
 
-function badgeStatusClass(row) {
+function badgeStatusClass(row, gameStatus) {
   const status = statusOf(row);
   if (status === "WON") return "marketPillWon";
   if (status === "LOST") return "marketPillLost";
   if (["PUSH", "VOID", "VOIDED", "CANCELLED", "CANCELED"].includes(status)) return "marketPillNeutral";
   if (isEarlyWinLive(row)) return "marketPillHit";
-  if (row.state === "LIVE") return "marketPillLive";
+  if (row.state === "LIVE" || (isLiveGameStatus(gameStatus) && !isSettled(row))) return "marketPillLive";
   return "marketPillUpcoming";
 }
 
-function MarketPill({ row, includeSelection = false }) {
+function MarketPill({ row, includeSelection = false, gameStatus }) {
   const value = friendlyLiveValue(row);
   const status = statusOf(row);
   const label = includeSelection ? teamGamePillLabel(row) : compactMarketLabel(row);
@@ -402,7 +403,7 @@ function MarketPill({ row, includeSelection = false }) {
   ].filter(Boolean).join(" • ");
 
   return (
-    <span className={`marketPill ${badgeStatusClass(row)}`} title={title}>
+    <span className={`marketPill ${badgeStatusClass(row, gameStatus)}`} title={title}>
       <span className="marketPillLabel">{label}</span>
       {row.count > 1 && <span className="marketPillCount">×{row.count}</span>}
       {isEarlyWinLive(row) && <span className="marketPillResult">✓ WON (LIVE)</span>}
@@ -483,7 +484,7 @@ function buildPlayerGroups(rows) {
   });
 }
 
-function PlayerMarketGroup({ group, showSettled }) {
+function PlayerMarketGroup({ group, showSettled, gameStatus }) {
   return (
     <div className={`playerMarketGroup ${group.live ? "playerMarketGroupLive" : ""}`}>
       <div className="playerMarketHead" style={{ display: "flex", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-start", columnGap: 10, rowGap: 3 }}>
@@ -502,18 +503,58 @@ function PlayerMarketGroup({ group, showSettled }) {
         </span>
         <span className="playerBetCount" style={{ marginLeft: "auto", whiteSpace: "nowrap" }}>{group.betIds.length} bet{group.betIds.length === 1 ? "" : "s"}</span>
       </div>
-      {!!group.activeRows.length && <div className="marketPillRow">{group.activeRows.map((row, index) => <MarketPill key={`${uniqueKey(row)}-${index}`} row={row} />)}</div>}
+      {!!group.activeRows.length && <div className="marketPillRow">{group.activeRows.map((row, index) => <MarketPill key={`${uniqueKey(row)}-${index}`} row={row} gameStatus={gameStatus} />)}</div>}
       {showSettled && !!group.settledRows.length && (
         <details className="settledMarketDetails">
           <summary>{group.settledRows.length} settled</summary>
-          <div className="marketPillRow">{group.settledRows.map((row, index) => <MarketPill key={`${uniqueKey(row)}-settled-${index}`} row={row} />)}</div>
+          <div className="marketPillRow">{group.settledRows.map((row, index) => <MarketPill key={`${uniqueKey(row)}-settled-${index}`} row={row} gameStatus={gameStatus} />)}</div>
         </details>
       )}
     </div>
   );
 }
 
-function TeamGameMarkets({ rows, showSettled }) {
+// The backend sends one string containing both players' Q1-Q4 values.
+// Render only known quarters; a zero in a future quarter is not a played zero.
+function EachQuarterProgress({ row, gameStatus }) {
+  const match = text(row.selection).match(/^(.+?)\s+(?:&|and)\s+(.+?)\s+to\s+Each\s+(?:Record|Have)\s+(\d+(?:\.\d+)?)\+\s+(Rushing|Receiving|Passing)\s+Yards\s+in\s+Each\s+Quarter$/i);
+  if (!match || upper(row.market) !== "PLAYER QUARTER SPECIALS") return null;
+  const players = [match[1], match[2]];
+  const threshold = Number(match[3]);
+  const currentQuarter = Number(String(gameStatus?.readout || gameStatus?.detail || "").match(/\bQ([1-4])\b/i)?.[1]) || null;
+  const final = isFinalGameStatus(gameStatus);
+  const parts = text(row.live_value).split(/\s+\|\s+/);
+  const values = players.map((name) => {
+    const part = parts.find((item) => item.toLowerCase().startsWith(`${name.toLowerCase()}:`));
+    const quarters = [...(part || "").matchAll(/\bQ([1-4])\s+(-?\d+(?:\.\d+)?)/gi)];
+    const result = [null, null, null, null];
+    for (const q of quarters) result[Number(q[1]) - 1] = Number(q[2]);
+    return result;
+  });
+  const hasProgress = values.some((v) => v.some((n) => n !== null));
+  return (
+    <div className="eachQuarterProgress" style={{ marginTop: 8, overflowX: "auto", fontSize: "0.85em" }} aria-label={`${threshold}+ ${match[4].toLowerCase()} yards for each player in each quarter`}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(95px,1.5fr) repeat(4,minmax(46px,1fr))", gap: "4px 8px", alignItems: "center", maxWidth: 490 }}>
+        <span style={{ opacity: 0.75 }}>Player</span>{[1,2,3,4].map((q) => <strong key={q} style={{ textAlign: "center" }}>Q{q}</strong>)}
+        {players.map((name, i) => [
+          <strong key={`${i}-name`} style={{ overflowWrap: "anywhere" }}>{name}</strong>,
+          ...[1,2,3,4].map((q) => {
+            const n = values[i][q-1];
+            const started = final || (currentQuarter !== null && q <= currentQuarter);
+            const shown = hasProgress && started && n !== null;
+            const hit = shown && n >= threshold;
+            return <span key={`${i}-${q}`} style={{ textAlign: "center", color: hit ? "#8edcc5" : "inherit", opacity: shown ? 1 : 0.55 }} title={!shown ? "Quarter not started or no verified live value" : `${name}: ${n} yards in Q${q}`}>
+              {shown ? `${n} yd${hit ? " ✓" : ""}` : "—"}
+            </span>;
+          })
+        ])}
+      </div>
+      {!hasProgress && <span style={{ opacity: 0.75 }}>Quarter statistics not available yet.</span>}
+    </div>
+  );
+}
+
+function TeamGameMarkets({ rows, showSettled, gameStatus }) {
   const activeRows = rows.filter(isUndecided);
   const settledRows = rows.filter(isSettled);
   if (!activeRows.length && !(showSettled && settledRows.length)) return null;
@@ -521,11 +562,11 @@ function TeamGameMarkets({ rows, showSettled }) {
   return (
     <div className="teamMarketSection">
       <div className="compactSectionLabel">Team / Game</div>
-      {!!activeRows.length && <div className="marketPillRow">{activeRows.map((row, index) => <MarketPill key={`${uniqueKey(row)}-team-${index}`} row={row} includeSelection />)}</div>}
+      {!!activeRows.length && <div className="marketPillRow">{activeRows.map((row, index) => <div key={`${uniqueKey(row)}-team-${index}`}><MarketPill row={row} includeSelection gameStatus={gameStatus} /><EachQuarterProgress row={row} gameStatus={gameStatus} /></div>)}</div>}
       {showSettled && !!settledRows.length && (
         <details className="settledMarketDetails">
           <summary>{settledRows.length} settled</summary>
-          <div className="marketPillRow">{settledRows.map((row, index) => <MarketPill key={`${uniqueKey(row)}-team-settled-${index}`} row={row} includeSelection />)}</div>
+          <div className="marketPillRow">{settledRows.map((row, index) => <MarketPill key={`${uniqueKey(row)}-team-settled-${index}`} row={row} includeSelection gameStatus={gameStatus} />)}</div>
         </details>
       )}
     </div>
@@ -555,10 +596,10 @@ function GameGroup({ group, open, onToggle, gameStatus, showSettled }) {
           {!!playerGroups.length && (
             <div className="playerMarketSection">
               <div className="compactSectionLabel">Players</div>
-              <div className="playerMarketList">{playerGroups.map((player) => <PlayerMarketGroup key={player.key} group={player} showSettled={showSettled} />)}</div>
+              <div className="playerMarketList">{playerGroups.map((player) => <PlayerMarketGroup key={player.key} group={player} showSettled={showSettled} gameStatus={gameStatus} />)}</div>
             </div>
           )}
-          <TeamGameMarkets rows={teamRows} showSettled={showSettled} />
+          <TeamGameMarkets rows={teamRows} showSettled={showSettled} gameStatus={gameStatus} />
         </div>
       )}
     </section>
