@@ -380,7 +380,8 @@ function MarketPill({ row, includeSelection = false }) {
   const value = friendlyLiveValue(row);
   const status = statusOf(row);
   const label = includeSelection ? teamGamePillLabel(row) : compactMarketLabel(row);
-  const showValue = !includeSelection && !isSettled(row) && value !== "—";
+  // Player live values are shown once in the inline player stats bar.
+  const showValue = false;
   const title = [
     row.selection,
     row.market,
@@ -400,6 +401,51 @@ function MarketPill({ row, includeSelection = false }) {
   );
 }
 
+// Shared classification drives both the inline stats bar and the bet-pill order.
+// Do not assume zero if ESPN has not supplied a live value yet.
+function playerStat(row) {
+  const market = upper(row.market);
+  if (market.includes("RUSHING") && market.includes("RECEIVING YARD")) return { key: "rushRecYds", label: "Rush + Rec Yds", order: 45 };
+  if (market.includes("PASSING") && market.includes("RUSHING YARD")) return { key: "passRushYds", label: "Pass + Rush Yds", order: 46 };
+  if (market.includes("RECEPTION") && !market.includes("LONGEST")) return { key: "rec", label: "Rec", order: 10 };
+  if (market.includes("RECEIVING YARD") && !market.includes("LONGEST")) return { key: "recYds", label: "Rec Yds", order: 20 };
+  if (market.includes("RUSHING YARD") && !market.includes("LONGEST")) return { key: "rushYds", label: "Rush Yds", order: 30 };
+  if (market.includes("PASSING YARD")) return { key: "passYds", label: "Pass Yds", order: 40 };
+  if (market.includes("PASSING TD")) return { key: "passTd", label: "Pass TD", order: 47 };
+  if (isAnytimeTdMarket(row) || /\b(?:ANYTIME|FIRST|LAST) (?:TD|TOUCHDOWN|TO SCORE)\b/.test(market)) return { key: "td", label: "TD", order: 50 };
+  if (market.includes("COMPLETION")) return { key: "completions", label: "Comp", order: 41 };
+  if (market.includes("INTERCEPTION")) return { key: "int", label: "INT", order: 42 };
+  // Other supported markets retain their own stat without inventing a metric.
+  return { key: `market:${market}`, label: compactMarketLabel({ ...row, line_value: null, direction: "" }), order: 90 };
+}
+
+function playerPillCompare(a, b) {
+  const statA = playerStat(a);
+  const statB = playerStat(b);
+  if (statA.order !== statB.order) return statA.order - statB.order;
+  if (statA.key !== statB.key) return statA.key.localeCompare(statB.key);
+  const thresholdA = Number(a.line_value);
+  const thresholdB = Number(b.line_value);
+  if (Number.isFinite(thresholdA) && Number.isFinite(thresholdB) && thresholdA !== thresholdB) return thresholdA - thresholdB;
+  return compactMarketLabel(a).localeCompare(compactMarketLabel(b), undefined, { numeric: true }) || urgencyRank(a) - urgencyRank(b);
+}
+
+function playerStatSummary(rows) {
+  const stats = new Map();
+  for (const row of rows) {
+    const stat = playerStat(row);
+    const value = liveValue(row);
+    const current = stats.get(stat.key);
+    // Prefer a known LIVE reading over unknown or outdated values. A settled
+    // occurrence may lack a current value while other bets on this player run.
+    const priority = (value !== "—" ? 2 : 0) + (row.state === "LIVE" ? 1 : 0);
+    if (!current || priority > current.priority) {
+      stats.set(stat.key, { ...stat, value, priority });
+    }
+  }
+  return [...stats.values()].sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+}
+
 function buildPlayerGroups(rows) {
   const map = new Map();
   for (const row of rows.filter(isPlayerLeg)) {
@@ -410,12 +456,12 @@ function buildPlayerGroups(rows) {
   }
 
   return [...map.values()].map((group) => {
-    const rowsSorted = [...group.rows].sort((a, b) => urgencyRank(a) - urgencyRank(b) || compactMarketLabel(a).localeCompare(compactMarketLabel(b)));
+    const rowsSorted = [...group.rows].sort(playerPillCompare);
     const activeRows = rowsSorted.filter(isUndecided);
     const settledRows = rowsSorted.filter(isSettled);
     const betIds = [...new Set(rowsSorted.flatMap((row) => row.betIds || []))];
     const live = activeRows.some((row) => row.state === "LIVE");
-    return { ...group, rows: rowsSorted, activeRows, settledRows, betIds, live };
+    return { ...group, rows: rowsSorted, activeRows, settledRows, betIds, live, stats: playerStatSummary(activeRows.length ? activeRows : rowsSorted) };
   }).sort((a, b) => {
     if (a.live !== b.live) return a.live ? -1 : 1;
     if (Boolean(a.activeRows.length) !== Boolean(b.activeRows.length)) return a.activeRows.length ? -1 : 1;
@@ -428,7 +474,14 @@ function PlayerMarketGroup({ group, showSettled }) {
     <div className={`playerMarketGroup ${group.live ? "playerMarketGroupLive" : ""}`}>
       <div className="playerMarketHead">
         <strong>{group.name}</strong>
-        <span>{group.betIds.length} bet{group.betIds.length === 1 ? "" : "s"}</span>
+        {!!group.stats.length && (
+          <span className="playerInlineStats" aria-label="Player stats">
+            {group.stats.map((stat) => (
+              <span key={stat.key} className="playerInlineStat">{stat.value} {stat.label}</span>
+            ))}
+          </span>
+        )}
+        <span className="playerBetCount">{group.betIds.length} bet{group.betIds.length === 1 ? "" : "s"}</span>
       </div>
       {!!group.activeRows.length && <div className="marketPillRow">{group.activeRows.map((row, index) => <MarketPill key={`${uniqueKey(row)}-${index}`} row={row} />)}</div>}
       {showSettled && !!group.settledRows.length && (
