@@ -276,7 +276,7 @@ function isGameOrTeamTotal(row) {
 }
 
 function isPlayerLeg(row) {
-  if (upper(row.market) === "PLAYER QUARTER SPECIALS") return false;
+  if (/^(?:PLAYER QUARTER SPECIALS|GAME SPECIALS(?: - POPULAR)?)$/.test(upper(row.market)) && /IN EACH QUARTER/i.test(text(row.selection))) return false;
   if (text(row.espn_athlete_id) || text(row.player_id) || text(row.athlete_id)) return true;
   const market = text(row.market);
   return /(receiving|rushing|passing|receptions?|touchdown|\btd\b|first to score|last to score|completions?|interceptions?|longest reception|longest rush)/i.test(market);
@@ -486,7 +486,7 @@ function buildPlayerGroups(rows) {
 
 function PlayerMarketGroup({ group, showSettled, gameStatus }) {
   return (
-    <div className={`playerMarketGroup ${group.live ? "playerMarketGroupLive" : ""}`}>
+    <div className={`playerMarketGroup ${group.live || isLiveGameStatus(gameStatus) ? "playerMarketGroupLive" : ""}`}>
       <div className="playerMarketHead" style={{ display: "flex", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-start", columnGap: 10, rowGap: 3 }}>
         <span style={{ display: "inline-flex", alignItems: "baseline", flexWrap: "wrap", columnGap: 10, rowGap: 3, minWidth: 0 }}>
           <strong>{group.name}</strong>
@@ -518,7 +518,7 @@ function PlayerMarketGroup({ group, showSettled, gameStatus }) {
 // Render only known quarters; a zero in a future quarter is not a played zero.
 function EachQuarterProgress({ row, gameStatus }) {
   const match = text(row.selection).match(/^(.+?)\s+(?:&|and)\s+(.+?)\s+to\s+Each\s+(?:Record|Have)\s+(\d+(?:\.\d+)?)\+\s+(Rushing|Receiving|Passing)\s+Yards\s+in\s+Each\s+Quarter$/i);
-  if (!match || upper(row.market) !== "PLAYER QUARTER SPECIALS") return null;
+  if (!match || !/^(?:PLAYER QUARTER SPECIALS|GAME SPECIALS(?: - POPULAR)?)$/.test(upper(row.market))) return null;
   const players = [match[1], match[2]];
   const threshold = Number(match[3]);
   const currentQuarter = Number(String(gameStatus?.readout || gameStatus?.detail || "").match(/\bQ([1-4])\b/i)?.[1]) || null;
