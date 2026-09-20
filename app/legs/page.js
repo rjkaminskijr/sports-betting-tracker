@@ -311,6 +311,12 @@ function directionShort(row) {
   return direction;
 }
 
+// Both standard and alternate receiving-yard markets describe the same stat.
+// Some feeds abbreviate yards as "Yds" rather than spelling out "Yards".
+function isReceivingYardsMarket(market) {
+  return /\bRECEIVING\s+Y(?:ARDS?|DS?)\b/.test(upper(market));
+}
+
 function compactMarketLabel(row) {
   const market = text(row.market);
   const m = upper(market);
@@ -328,7 +334,7 @@ function compactMarketLabel(row) {
   if (m.includes("ANYTIME TD") || m === "TOUCHDOWN SCORER" || m.includes("TO SCORE A TOUCHDOWN")) return "ATD";
   if (m.includes("RUSHING") && m.includes("RECEIVING YARD")) return `${prefix}Rush + Rec Yds`.trim();
   if (m.includes("PASSING") && m.includes("RUSHING YARD")) return `${prefix}Pass + Rush Yds`.trim();
-  if (m.includes("RECEIVING YARD")) return `${prefix}Rec Yds`.trim();
+  if (isReceivingYardsMarket(m)) return `${prefix}Rec Yds`.trim();
   if (m.includes("RUSHING YARD")) return `${prefix}Rush Yds`.trim();
   if (m.includes("PASSING YARD")) return `${prefix}Pass Yds`.trim();
   if (m.includes("RECEPTION")) return `${prefix}Rec`.trim();
@@ -408,7 +414,7 @@ function playerStat(row) {
   if (market.includes("RUSHING") && market.includes("RECEIVING YARD")) return { key: "rushRecYds", label: "Rush + Rec Yds", order: 45 };
   if (market.includes("PASSING") && market.includes("RUSHING YARD")) return { key: "passRushYds", label: "Pass + Rush Yds", order: 46 };
   if (market.includes("RECEPTION") && !market.includes("LONGEST")) return { key: "rec", label: "Rec", order: 10 };
-  if (market.includes("RECEIVING YARD") && !market.includes("LONGEST")) return { key: "recYds", label: "Rec Yds", order: 20 };
+  if (isReceivingYardsMarket(market) && !market.includes("LONGEST")) return { key: "recYds", label: "Rec Yds", order: 20 };
   if (market.includes("RUSHING YARD") && !market.includes("LONGEST")) return { key: "rushYds", label: "Rush Yds", order: 30 };
   if (market.includes("PASSING YARD")) return { key: "passYds", label: "Pass Yds", order: 40 };
   if (market.includes("PASSING TD")) return { key: "passTd", label: "Pass TD", order: 47 };
@@ -450,7 +456,9 @@ function buildPlayerGroups(rows) {
   const map = new Map();
   for (const row of rows.filter(isPlayerLeg)) {
     const name = text(row.selection) || "Unnamed player";
-    const key = `${text(row.espn_athlete_id) || text(row.player_id) || name.toLowerCase()}`;
+    // Group by player name *within this game*. Imported alternate markets
+    // sometimes lack ESPN athlete IDs or use a different identifier.
+    const key = name.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
     if (!map.has(key)) map.set(key, { key, name, rows: [] });
     map.get(key).rows.push(row);
   }
