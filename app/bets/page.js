@@ -106,6 +106,25 @@ function displayBetType(bet) {
   return aliases[type] || (type ? type.replaceAll("_", " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()) : "Other");
 }
 
+function isRoundRobin(bet) {
+  const type = String(bet?.bet_type || "").trim().toUpperCase();
+  return type.includes("ROUND_ROBIN") || type.includes("ROUND ROBIN") ||
+    bet?.round_robin_size != null || bet?.round_robin_combinations != null;
+}
+
+function roundRobinDetails(bet) {
+  if (!isRoundRobin(bet)) return null;
+  // These are actual columns on the parent bet; never infer a size from leg count.
+  const size = Number(bet?.round_robin_size);
+  const combinations = Number(bet?.round_robin_combinations);
+  const each = Number(bet?.round_robin_wager_each);
+  return {
+    size: Number.isSafeInteger(size) && size > 0 && bet?.round_robin_size != null ? size : null,
+    combinations: Number.isSafeInteger(combinations) && combinations > 0 && bet?.round_robin_combinations != null ? combinations : null,
+    each: Number.isFinite(each) && each >= 0 && bet?.round_robin_wager_each != null ? each : null
+  };
+}
+
 function betDescription(bet) {
   const sport = displaySport(bet);
   const legs = bet.legs || [];
@@ -119,7 +138,9 @@ function betDescription(bet) {
   }
   if (type.includes("SGPX")) return `${sport} SGPx ${legs.length}-Pick Parlay`;
   if (bet?.round_robin_size || bet?.round_robin_combinations || type.includes("ROUND ROBIN")) {
-    return markets.length === 1 ? `${sport} ${markets[0]} Round Robin` : `${sport} Round Robin`;
+    const size = roundRobinDetails(bet)?.size;
+    const title = markets.length === 1 ? `${sport} ${markets[0]} Round Robin` : `${sport} Round Robin`;
+    return size ? `${title} (By ${size}s)` : title;
   }
   if (legs.length === 1) return `${sport} ${markets[0] || "Straight Bet"}`;
   if (markets.length === 1 && legs.length > 1) return `${sport} ${markets[0]} Parlay`;
@@ -272,7 +293,9 @@ function qualityIssues(bet) {
   if (!String(bet.sportsbook || "").trim()) issues.push("Sportsbook missing");
   if (displaySport(bet) === "Football") issues.push("Sport missing");
   if (bet.stake == null) issues.push("Wager missing");
-  if (bet.current_odds == null && bet.original_odds == null && bet.boosted_odds == null) issues.push("Odds missing");
+  // A round robin contains multiple tickets with different combined odds;
+  // the parent receipt legitimately has no single meaningful odds value.
+  if (!isRoundRobin(bet) && bet.current_odds == null && bet.original_odds == null && bet.boosted_odds == null) issues.push("Odds missing");
   if (bet.to_pay == null && bet.cash_out == null) issues.push("Potential payout missing");
   if (bet.leg_count != null && Number(bet.leg_count) !== legs.length) issues.push(`Leg count says ${bet.leg_count}, stored ${legs.length}`);
   return issues;
@@ -289,6 +312,7 @@ function BetCard({ bet, onCashOut, onSettleBet, onVoidLeg, voidBusyId }) {
   const pnl = profitLoss(bet);
   const issues = qualityIssues(bet);
   const description = betDescription(bet);
+  const roundRobin = roundRobinDetails(bet);
   const game = betGameSummary(bet);
   const [cashOutOpen, setCashOutOpen] = useState(false);
   const [cashOutAmount, setCashOutAmount] = useState("");
@@ -357,11 +381,11 @@ function BetCard({ bet, onCashOut, onSettleBet, onVoidLeg, voidBusyId }) {
             <StatusPill status={bet.status} />
             {legs.length > 1 && <span>{readableProgress(legs)}</span>}
           </div>
-          <small>{bet.sportsbook || "Sportsbook"} · {displaySport(bet)} · {legs.length} leg{legs.length === 1 ? "" : "s"}</small>
+          <small>{bet.sportsbook || "Sportsbook"} · {displaySport(bet)} · {legs.length} selection{legs.length === 1 ? "" : "s"}{roundRobin?.combinations ? ` · ${roundRobin.combinations} combinations` : ""}</small>
         </div>
         <div className="amount betSummaryAmount">
           <strong>{money(bet.stake)}</strong>
-          <small>{odds(displayedOdds)}</small>
+          <small>{roundRobin ? (roundRobin.size ? `By ${roundRobin.size}s` : "Multiple odds") : odds(displayedOdds)}</small>
           <small className="payoutLine">Pays {bet.to_pay == null ? "—" : money(bet.to_pay)}</small>
           <span className="expandHint">⌄</span>
         </div>
@@ -370,13 +394,20 @@ function BetCard({ bet, onCashOut, onSettleBet, onVoidLeg, voidBusyId }) {
       <div className="betBody activeBetBody">
         <div className="betMetricGrid">
           <div><span>Wager</span><strong>{money(bet.stake)}</strong></div>
-          <div><span>Odds</span><strong>{odds(displayedOdds)}</strong></div>
+          <div><span>{roundRobin ? "Round Robin" : "Odds"}</span><strong>{roundRobin ? (roundRobin.size ? `By ${roundRobin.size}s` : "Size unavailable") : odds(displayedOdds)}</strong></div>
           <div><span>To Pay</span><strong>{money(bet.to_pay)}</strong></div>
           <div><span>Paid</span><strong>{bet.paid == null ? "—" : money(bet.paid)}</strong></div>
           <div><span>P/L</span><strong>{pnl == null ? "—" : money(pnl)}</strong></div>
         </div>
 
-        <p className="betCaption">{bet.sportsbook || ""} · {displaySport(bet)} · {legs.length} leg{legs.length === 1 ? "" : "s"} · {formatDate(bet.placed_at || bet.source_captured_at)}</p>
+        <p className="betCaption">{bet.sportsbook || ""} · {displaySport(bet)} · {legs.length} {roundRobin ? "selections" : "legs"} · {formatDate(bet.placed_at || bet.source_captured_at)}</p>
+        {roundRobin && (
+          <p className="betCaption">
+            {roundRobin.size ? `Round Robin by ${roundRobin.size}s` : "Round Robin size unavailable"}
+            {roundRobin.combinations != null ? ` · ${roundRobin.combinations} combinations` : ""}
+            {roundRobin.each != null ? ` · ${money(roundRobin.each)} per combination` : ""}
+          </p>
+        )}
 
         {issues.length > 0 && (
           <div className="issueBox"><strong>Review:</strong> {issues.join(" • ")}</div>
@@ -483,7 +514,12 @@ function BetCard({ bet, onCashOut, onSettleBet, onVoidLeg, voidBusyId }) {
             <span>Bet Type</span><strong>{displayBetType(bet)}</strong>
             <span>Status</span><strong>{statusOf(bet)}</strong>
             <span>Sport</span><strong>{displaySport(bet)}</strong>
-            <span>Leg Count</span><strong>{bet.leg_count ?? legs.length}</strong>
+            <span>{roundRobin ? "Selections" : "Leg Count"}</span><strong>{bet.leg_count ?? legs.length}</strong>
+            {roundRobin && <>
+              <span>Round Robin Size</span><strong>{roundRobin.size ? `By ${roundRobin.size}s` : "—"}</strong>
+              <span>Combinations</span><strong>{roundRobin.combinations ?? "—"}</strong>
+              <span>Wager per Combination</span><strong>{roundRobin.each == null ? "—" : money(roundRobin.each)}</strong>
+            </>}
             <span>Placed At</span><strong>{formatDate(bet.placed_at)}</strong>
             <span>Screenshot Captured</span><strong>{formatDate(bet.source_captured_at)}</strong>
             {bet.promo && <><span>Promo</span><strong>{bet.promo}</strong></>}
