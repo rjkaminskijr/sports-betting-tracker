@@ -472,16 +472,21 @@ function buildPlayerGroups(rows) {
 function PlayerMarketGroup({ group, showSettled }) {
   return (
     <div className={`playerMarketGroup ${group.live ? "playerMarketGroupLive" : ""}`}>
-      <div className="playerMarketHead">
-        <strong>{group.name}</strong>
-        {!!group.stats.length && (
-          <span className="playerInlineStats" aria-label="Player stats">
-            {group.stats.map((stat) => (
-              <span key={stat.key} className="playerInlineStat">{stat.value} {stat.label}</span>
-            ))}
-          </span>
-        )}
-        <span className="playerBetCount">{group.betIds.length} bet{group.betIds.length === 1 ? "" : "s"}</span>
+      <div className="playerMarketHead" style={{ display: "flex", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-start", columnGap: 10, rowGap: 3 }}>
+        <span style={{ display: "inline-flex", alignItems: "baseline", flexWrap: "wrap", columnGap: 10, rowGap: 3, minWidth: 0 }}>
+          <strong>{group.name}</strong>
+          {!!group.stats.length && (
+            <span className="playerInlineStats" aria-label="Player stats" style={{ display: "inline-flex", alignItems: "baseline", flexWrap: "wrap", gap: 0, color: "#8edcc5", fontSize: "0.85em", whiteSpace: "normal" }}>
+              {group.stats.map((stat, index) => (
+                <span key={stat.key} className="playerInlineStat" style={{ whiteSpace: "nowrap" }}>
+                  {index > 0 && <span aria-hidden="true" style={{ margin: "0 6px", opacity: 0.65 }}>·</span>}
+                  {stat.value} {stat.label}
+                </span>
+              ))}
+            </span>
+          )}
+        </span>
+        <span className="playerBetCount" style={{ marginLeft: "auto", whiteSpace: "nowrap" }}>{group.betIds.length} bet{group.betIds.length === 1 ? "" : "s"}</span>
       </div>
       {!!group.activeRows.length && <div className="marketPillRow">{group.activeRows.map((row, index) => <MarketPill key={`${uniqueKey(row)}-${index}`} row={row} />)}</div>}
       {showSettled && !!group.settledRows.length && (
