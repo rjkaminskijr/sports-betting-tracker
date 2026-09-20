@@ -106,8 +106,14 @@ function liveValue(row) {
 }
 
 function isAnytimeTdMarket(row) {
-  const market = upper(row?.market);
-  return market.includes("ANYTIME TD") || market === "TOUCHDOWN SCORER" || market.includes("TO SCORE A TOUCHDOWN");
+  // Sportsbooks and parsers use multiple labels for the same anytime TD prop.
+  // Do not combine first/last scorer, passing TD or other distinct markets.
+  const market = upper(row?.market).replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+  if (/\b(?:FIRST|LAST)\b/.test(market)) return false;
+  return market === "ATD" ||
+    market === "TOUCHDOWN SCORER" ||
+    /\bANY\s*TIME\s+(?:TD|TOUCHDOWN)(?:\s+SCORER)?\b/.test(market) ||
+    /\bTO SCORE (?:A |AN )?(?:TD|TOUCHDOWN)\b/.test(market);
 }
 
 function uniqueKey(row) {
@@ -331,7 +337,7 @@ function compactMarketLabel(row) {
 
   if (m.includes("FIRST TD") || m.includes("FIRST TOUCHDOWN") || m.includes("FIRST TO SCORE")) return "FTD";
   if (m.includes("LAST TD") || m.includes("LAST TOUCHDOWN") || m.includes("LAST TO SCORE")) return "LTD";
-  if (m.includes("ANYTIME TD") || m === "TOUCHDOWN SCORER" || m.includes("TO SCORE A TOUCHDOWN")) return "ATD";
+  if (isAnytimeTdMarket(row)) return "ATD";
   if (m.includes("RUSHING") && m.includes("RECEIVING YARD")) return `${prefix}Rush + Rec Yds`.trim();
   if (m.includes("PASSING") && m.includes("RUSHING YARD")) return `${prefix}Pass + Rush Yds`.trim();
   if (isReceivingYardsMarket(m)) return `${prefix}Rec Yds`.trim();
@@ -418,7 +424,7 @@ function playerStat(row) {
   if (market.includes("RUSHING YARD") && !market.includes("LONGEST")) return { key: "rushYds", label: "Rush Yds", order: 30 };
   if (market.includes("PASSING YARD")) return { key: "passYds", label: "Pass Yds", order: 40 };
   if (market.includes("PASSING TD")) return { key: "passTd", label: "Pass TD", order: 47 };
-  if (isAnytimeTdMarket(row) || /\b(?:ANYTIME|FIRST|LAST) (?:TD|TOUCHDOWN|TO SCORE)\b/.test(market)) return { key: "td", label: "TD", order: 50 };
+  if (isAnytimeTdMarket(row) || /\b(?:FIRST|LAST) (?:TD|TOUCHDOWN|TO SCORE)\b/.test(market)) return { key: "td", label: "TD", order: 50 };
   if (market.includes("COMPLETION")) return { key: "completions", label: "Comp", order: 41 };
   if (market.includes("INTERCEPTION")) return { key: "int", label: "INT", order: 42 };
   // Other supported markets retain their own stat without inventing a metric.
