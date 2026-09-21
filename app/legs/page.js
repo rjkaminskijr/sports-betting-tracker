@@ -425,7 +425,13 @@ function playerStat(row) {
   if (market.includes("RUSHING YARD") && !market.includes("LONGEST")) return { key: "rushYds", label: "Rush Yds", order: 30 };
   if (market.includes("PASSING YARD")) return { key: "passYds", label: "Pass Yds", order: 40 };
   if (market.includes("PASSING TD")) return { key: "passTd", label: "Pass TD", order: 47 };
-  if (isAnytimeTdMarket(row) || /\b(?:FIRST|LAST) (?:TD|TOUCHDOWN|TO SCORE)\b/.test(market)) return { key: "td", label: "TD", order: 50 };
+  // Multiple-TD scorer props share the same real touchdown count as ATD.
+  // Keep their wager thresholds in their separate pills, not in the stats bar.
+  if (isAnytimeTdMarket(row) || /\b(?:FIRST|LAST) (?:TD|TOUCHDOWN|TO SCORE)\b/.test(market) ||
+      (/\bTO SCORE\s+\d+\+?\s*(?:TDS?|TOUCHDOWNS?)\b/.test(market) &&
+       !/\b(?:PASSING|TEAM|EITHER PLAYER|EACH QUARTER)\b/.test(market))) {
+    return { key: "td", label: "TD", order: 50 };
+  }
   if (market.includes("COMPLETION")) return { key: "completions", label: "Comp", order: 41 };
   if (market.includes("INTERCEPTION")) return { key: "int", label: "INT", order: 42 };
   // Other supported markets retain their own stat without inventing a metric.
