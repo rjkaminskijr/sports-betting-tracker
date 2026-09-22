@@ -108,7 +108,7 @@ function liveValue(row) {
 function isAnytimeTdMarket(row) {
   // Sportsbooks and parsers use multiple labels for the same anytime TD prop.
   // Do not combine first/last scorer, passing TD or other distinct markets.
-  const market = upper(row?.market).replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+  const market = normalizedMarket(row).replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
   if (/\b(?:FIRST|LAST)\b/.test(market)) return false;
   return market === "ATD" ||
     market === "TOUCHDOWN SCORER" ||
@@ -116,18 +116,55 @@ function isAnytimeTdMarket(row) {
     /\bTO SCORE (?:A |AN )?(?:TD|TOUCHDOWN)\b/.test(market);
 }
 
+// Normalize presentation only. Source records and IDs remain untouched.
+const PLAYER_NAME_ALIASES = new Map([
+  ["cam skattebo", "Cameron Skattebo"],
+]);
+function selectionPlayerName(selection) {
+  let name = text(selection).normalize("NFKC").replace(/\s+/g, " ");
+  // A combined-player special must never be attached to either player's card.
+  if (/\b(?:or|and)\b|\s+&\s+|\b(?:each|both)\s+players?\b/i.test(name)) return null;
+  name = name.replace(/\s+(?:to\s+)?(?:record|have|score)\s+\d.*$/i, "")
+    .replace(/\s+(?:(?:over|under|at least)\s+)?\d+(?:\.\d+)?\s*\+?\s*(?:(?:alt(?:ernate)?\s+)?(?:rushing|receiving|passing|total|combined)\s*)?(?:yards?|yds?|receptions?|recs?|touchdowns?|tds?)\b.*$/i, "")
+    .replace(/\s+\d+(?:\.\d+)?\s*\+?\s*$/i, "")
+    .replace(/\s+(?:any\s*time\s+touchdown\s+scorer|anytime\s+td)\b.*$/i, "")
+    .trim();
+  const key = name.toLowerCase().replace(/[.’']/g, "").replace(/\s+/g, " ");
+  return PLAYER_NAME_ALIASES.get(key) || name || null;
+}
+function normalizedMarket(row) {
+  const player = selectionPlayerName(row.selection);
+  let market = upper(row.market).replace(/\s+/g, " ");
+  if (player) {
+    const original = text(row.selection).replace(/\s+(?:(?:over|under|at least)\s+)?\d.*$/i, "").trim();
+    for (const name of new Set([player, original])) {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const match = market.match(new RegExp(`^${escaped}\\s*[-–:]\\s*(.+)$`, "i"));
+      if (match) { market = match[1].trim(); break; }
+    }
+  }
+  return market;
+}
+function playerIdentity(row) {
+  return selectionPlayerName(row.selection)?.toLowerCase().replace(/[.’']/g, "").replace(/\s+/g, " ") || null;
+}
+function isMultiPlayerSpecial(row) {
+  return /\b(?:OR|AND)\b|\s&\s|\b(?:EACH|BOTH) PLAYERS?\b/i.test(text(row.selection)) &&
+    /\b(?:TD|TOUCHDOWN|YARDS?|YDS?|RECEPTIONS?|REC|SCORE)\b/i.test(`${row.selection} ${row.market}`);
+}
+
 function uniqueKey(row) {
   const anytimeTd = isAnytimeTdMarket(row);
 
   return [
     sportOf(row),
-    upper(row.selection),
-    anytimeTd ? "ATD" : upper(row.market),
+    (isPlayerLeg(row) && playerIdentity(row)) || upper(row.selection),
+    anytimeTd ? "ATD" : (isPlayerLeg(row) ? playerStat(row).key : normalizedMarket(row)),
     anytimeTd ? "" : String(row.line_value ?? ""),
     anytimeTd ? "" : upper(row.direction),
     row.espn_event_id ? `event:${row.espn_event_id}` : `game:${gameOf(row)}`,
-    statusOf(row),
-    liveValue(row)
+    statusOf(row)
+    // Do not split the same prop just because one occurrence lacks live stats.
   ].join("||");
 }
 
@@ -140,7 +177,7 @@ function combineRows(rows) {
   }
 
   return [...groups.values()].map((group) => {
-    const first = group[0];
+    const first = [...group].sort((a, b) => (liveValue(b) !== "—" ? 1 : 0) - (liveValue(a) !== "—" ? 1 : 0))[0];
     const betIds = [...new Set(group.map((r) => Number(r.bet_row_id)).filter(Number.isFinite))].sort((a, b) => a - b);
     const sportsbooks = [...new Set(group.map((r) => text(r.parent_sportsbook || r.sportsbook)).filter(Boolean))].sort();
     const settled = group.every(isSettled);
@@ -276,10 +313,11 @@ function isGameOrTeamTotal(row) {
 }
 
 function isPlayerLeg(row) {
-  if (/^(?:PLAYER QUARTER SPECIALS|GAME SPECIALS(?: - POPULAR)?)$/.test(upper(row.market)) && /IN EACH QUARTER/i.test(text(row.selection))) return false;
+  if (isMultiPlayerSpecial(row)) return false;
+  if (/^(?:PLAYER QUARTER SPECIALS|GAME SPECIALS(?: - [A-Z ]+)?)$/.test(upper(row.market))) return false;
+  if (isGameOrTeamTotal(row)) return false;
   if (text(row.espn_athlete_id) || text(row.player_id) || text(row.athlete_id)) return true;
-  const market = text(row.market);
-  return /(receiving|rushing|passing|receptions?|touchdown|\btd\b|first to score|last to score|completions?|interceptions?|longest reception|longest rush)/i.test(market);
+  return /(receiving|rushing|passing|receptions?|touchdown|\btd\b|first to score|last to score|completions?|interceptions?|longest reception|longest rush)/i.test(text(row.market));
 }
 
 function rawLegText(row) {
@@ -325,8 +363,8 @@ function isReceivingYardsMarket(market) {
 }
 
 function compactMarketLabel(row) {
-  const market = text(row.market);
-  const m = upper(market);
+  const market = normalizedMarket(row);
+  const m = market;
   const line = row.line_value;
   const dir = directionShort(row);
   const hasLine = line !== null && line !== undefined && line !== "";
@@ -339,11 +377,11 @@ function compactMarketLabel(row) {
   if (m.includes("FIRST TD") || m.includes("FIRST TOUCHDOWN") || m.includes("FIRST TO SCORE")) return "FTD";
   if (m.includes("LAST TD") || m.includes("LAST TOUCHDOWN") || m.includes("LAST TO SCORE")) return "LTD";
   if (isAnytimeTdMarket(row)) return "ATD";
-  if (m.includes("RUSHING") && m.includes("RECEIVING YARD")) return `${prefix}Rush + Rec Yds`.trim();
-  if (m.includes("PASSING") && m.includes("RUSHING YARD")) return `${prefix}Pass + Rush Yds`.trim();
+  if (m.includes("RUSHING") && /RECEIVING\s+Y(?:ARDS?|DS?)\b/.test(m)) return `${prefix}Rush + Rec Yds`.trim();
+  if (m.includes("PASSING") && /RUSHING\s+Y(?:ARDS?|DS?)\b/.test(m)) return `${prefix}Pass + Rush Yds`.trim();
   if (isReceivingYardsMarket(m)) return `${prefix}Rec Yds`.trim();
-  if (m.includes("RUSHING YARD")) return `${prefix}Rush Yds`.trim();
-  if (m.includes("PASSING YARD")) return `${prefix}Pass Yds`.trim();
+  if (/RUSHING\s+Y(?:ARDS?|DS?)\b/.test(m)) return `${prefix}Rush Yds`.trim();
+  if (/PASSING\s+Y(?:ARDS?|DS?)\b/.test(m)) return `${prefix}Pass Yds`.trim();
   if (m.includes("RECEPTION")) return `${prefix}Rec`.trim();
   if (m.includes("PASSING TD")) return `${prefix}Pass TDs`.trim();
   if (m.includes("INTERCEPTION")) return `${prefix}INT`.trim();
@@ -417,14 +455,14 @@ function MarketPill({ row, includeSelection = false, gameStatus }) {
 // Shared classification drives both the inline stats bar and the bet-pill order.
 // Do not assume zero if ESPN has not supplied a live value yet.
 function playerStat(row) {
-  const market = upper(row.market);
-  if (market.includes("RUSHING") && market.includes("RECEIVING YARD")) return { key: "rushRecYds", label: "Rush + Rec Yds", order: 45 };
-  if (market.includes("PASSING") && market.includes("RUSHING YARD")) return { key: "passRushYds", label: "Pass + Rush Yds", order: 46 };
+  const market = normalizedMarket(row);
+  if (market.includes("RUSHING") && /RECEIVING\s+Y(?:ARDS?|DS?)\b/.test(market)) return { key: "rushRecYds", label: "Rush + Rec Yds", order: 45 };
+  if (market.includes("PASSING") && /RUSHING\s+Y(?:ARDS?|DS?)\b/.test(market)) return { key: "passRushYds", label: "Pass + Rush Yds", order: 46 };
   if (market.includes("RECEPTION") && !market.includes("LONGEST")) return { key: "rec", label: "Rec", order: 10 };
   if (isReceivingYardsMarket(market) && !market.includes("LONGEST")) return { key: "recYds", label: "Rec Yds", order: 20 };
-  if (market.includes("RUSHING YARD") && !market.includes("LONGEST")) return { key: "rushYds", label: "Rush Yds", order: 30 };
-  if (market.includes("PASSING YARD")) return { key: "passYds", label: "Pass Yds", order: 40 };
-  if (market.includes("PASSING TD")) return { key: "passTd", label: "Pass TD", order: 47 };
+  if (/RUSHING\s+Y(?:ARDS?|DS?)\b/.test(market) && !market.includes("LONGEST")) return { key: "rushYds", label: "Rush Yds", order: 30 };
+  if (/PASSING\s+Y(?:ARDS?|DS?)\b/.test(market)) return { key: "passYds", label: "Pass Yds", order: 40 };
+  if (/PASSING\s+(?:TDS?|TOUCHDOWNS?)\b/.test(market)) return { key: "passTd", label: "Pass TD", order: 47 };
   // Multiple-TD scorer props share the same real touchdown count as ATD.
   // Keep their wager thresholds in their separate pills, not in the stats bar.
   if (isAnytimeTdMarket(row) || /\b(?:FIRST|LAST) (?:TD|TOUCHDOWN|TO SCORE)\b/.test(market) ||
@@ -468,7 +506,7 @@ function playerStatSummary(rows) {
 function buildPlayerGroups(rows) {
   const map = new Map();
   for (const row of rows.filter(isPlayerLeg)) {
-    const name = text(row.selection) || "Unnamed player";
+    const name = selectionPlayerName(row.selection) || text(row.selection) || "Unnamed player";
     // Group by player name *within this game*. Imported alternate markets
     // sometimes lack ESPN athlete IDs or use a different identifier.
     const key = name.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
