@@ -520,7 +520,7 @@ function buildPlayerGroups(rows) {
     const settledRows = rowsSorted.filter(isSettled);
     const betIds = [...new Set(rowsSorted.flatMap((row) => row.betIds || []))];
     const live = activeRows.some((row) => row.state === "LIVE");
-    return { ...group, rows: rowsSorted, activeRows, settledRows, betIds, live, stats: playerStatSummary(activeRows.length ? activeRows : rowsSorted) };
+    return { ...group, rows: rowsSorted, activeRows, settledRows, betIds, live, stats: playerStatSummary(rowsSorted) };
   }).sort((a, b) => {
     if (a.live !== b.live) return a.live ? -1 : 1;
     if (Boolean(a.activeRows.length) !== Boolean(b.activeRows.length)) return a.activeRows.length ? -1 : 1;
