@@ -376,6 +376,12 @@ function compactMarketLabel(row) {
 
   if (m.includes("FIRST TD") || m.includes("FIRST TOUCHDOWN") || m.includes("FIRST TO SCORE")) return "FTD";
   if (m.includes("LAST TD") || m.includes("LAST TOUCHDOWN") || m.includes("LAST TO SCORE")) return "LTD";
+
+  // Compact multi-touchdown scorer props:
+  // "TO SCORE 2+ TOUCHDOWNS" -> "2+ TD"
+  const multiTdMatch = m.match(/(?:^|\\b)TO SCORE\\s+(\\d+)\\+\\s*(?:TDS?|TOUCHDOWNS?)\\b/);
+  if (multiTdMatch) return `${multiTdMatch[1]}+ TD`;
+
   if (isAnytimeTdMarket(row)) return "ATD";
   if (m.includes("RUSHING") && /RECEIVING\s+Y(?:ARDS?|DS?)\b/.test(m)) return `${prefix}Rush + Rec Yds`.trim();
   if (m.includes("PASSING") && /RUSHING\s+Y(?:ARDS?|DS?)\b/.test(m)) return `${prefix}Pass + Rush Yds`.trim();
