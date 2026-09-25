@@ -378,8 +378,8 @@ function compactMarketLabel(row) {
   if (m.includes("LAST TD") || m.includes("LAST TOUCHDOWN") || m.includes("LAST TO SCORE")) return "LTD";
 
   // Compact multi-touchdown scorer props:
-  // "TO SCORE 2+ TOUCHDOWNS" -> "2+ TD"
-  const multiTdMatch = m.match(/(?:^|\\b)TO SCORE\\s+(\\d+)\\+\\s*(?:TDS?|TOUCHDOWNS?)\\b/);
+  // "2+ TO SCORE 2+ TOUCHDOWNS" -> "2+ TD"
+  const multiTdMatch = m.match(/(?:^|\b)TO SCORE\s+(\d+)\+\s*(?:TDS?|TOUCHDOWNS?)\b/);
   if (multiTdMatch) return `${multiTdMatch[1]}+ TD`;
 
   if (isAnytimeTdMarket(row)) return "ATD";
