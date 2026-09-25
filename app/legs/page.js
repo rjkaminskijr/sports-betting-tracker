@@ -128,6 +128,10 @@ function selectionPlayerName(selection) {
     .replace(/\s+(?:(?:over|under|at least)\s+)?\d+(?:\.\d+)?\s*\+?\s*(?:(?:alt(?:ernate)?\s+)?(?:rushing|receiving|passing|total|combined)\s*)?(?:yards?|yds?|receptions?|recs?|touchdowns?|tds?)\b.*$/i, "")
     .replace(/\s+\d+(?:\.\d+)?\s*\+?\s*$/i, "")
     .replace(/\s+(?:any\s*time\s+touchdown\s+scorer|anytime\s+td)\b.*$/i, "")
+    // Sportsbook feeds sometimes include generational suffixes on only some
+    // occurrences of the same player (e.g. "Kyle Pitts Sr." vs "Kyle Pitts").
+    // Strip them for display/grouping so those bets consolidate.
+    .replace(/\s+(?:Jr\.?|Sr\.?|II|III|IV|V)$/i, "")
     .trim();
   const key = name.toLowerCase().replace(/[.’']/g, "").replace(/\s+/g, " ");
   return PLAYER_NAME_ALIASES.get(key) || name || null;
