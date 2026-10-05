@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchJsonWithRetry } from "../../lib/client-api";
 import { isEarlyWinLive } from "../../lib/early-win";
 
-const REFRESH_MS = 30000;
+const REFRESH_MS = 60000;
 const FINAL_REVIEW_BUFFER_MS = 15 * 60 * 1000;
 const FINAL_FALLBACK_MAX_GAME_AGE_MS = 8 * 60 * 60 * 1000;
 const FINAL_SEEN_STORAGE_KEY = "sports-bet-tracker-final-seen-v1";
@@ -1030,7 +1030,7 @@ export default function LegsPage() {
       }
     }
     loadGameStatuses();
-    const id = setInterval(loadGameStatuses, 15000);
+    const id = setInterval(loadGameStatuses, 30000);
     return () => { cancelled = true; clearInterval(id); };
   }, [gameStatusRefs.map((g) => `${g.eventId}|${g.sport}`).join(",")]);
 
