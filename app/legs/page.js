@@ -427,20 +427,49 @@ function teamGamePillLabel(row) {
   return selection && selection !== detail ? `${selection} · ${detail}` : selection || detail;
 }
 
-function badgeStatusClass(row, gameStatus) {
+function badgeStatusClass(row, gameStatus, earlyWinRow = row) {
   const status = statusOf(row);
   if (status === "WON") return "marketPillWon";
   if (status === "LOST") return "marketPillLost";
   if (["PUSH", "VOID", "VOIDED", "CANCELLED", "CANCELED"].includes(status)) return "marketPillNeutral";
-  if (isEarlyWinLive(row)) return "marketPillHit";
+  if (isEarlyWinLive(earlyWinRow)) return "marketPillHit";
   if (row.state === "LIVE" || (isLiveGameStatus(gameStatus) && !isSettled(row))) return "marketPillLive";
   return "marketPillUpcoming";
 }
 
-function MarketPill({ row, includeSelection = false, gameStatus }) {
+function MarketPill({
+  row,
+  includeSelection = false,
+  gameStatus,
+  sharedLiveValue,
+  sharedLive = false
+}) {
   const value = friendlyLiveValue(row);
   const status = statusOf(row);
   const label = includeSelection ? teamGamePillLabel(row) : compactMarketLabel(row);
+
+  // Duplicate wagers for the same player/stat do not always receive live_value
+  // on every occurrence. Evaluate display-only WON (LIVE) using the best current
+  // stat from the whole player group. The original row/status remains untouched.
+  const hasSharedLiveValue =
+    sharedLiveValue !== undefined &&
+    sharedLiveValue !== null &&
+    sharedLiveValue !== "" &&
+    sharedLiveValue !== "—";
+
+  const earlyWinRow = (
+    !isSettled(row) &&
+    (hasSharedLiveValue || sharedLive)
+  )
+    ? {
+        ...row,
+        ...(hasSharedLiveValue ? { live_value: sharedLiveValue } : {}),
+        ...(sharedLive ? { live_state: "LIVE", state: "LIVE" } : {})
+      }
+    : row;
+
+  const earlyWin = isEarlyWinLive(earlyWinRow);
+
   // Player live values are shown once in the inline player stats bar.
   const showValue = false;
   const title = [
@@ -451,10 +480,10 @@ function MarketPill({ row, includeSelection = false, gameStatus }) {
   ].filter(Boolean).join(" • ");
 
   return (
-    <span className={`marketPill ${badgeStatusClass(row, gameStatus)}`} title={title}>
+    <span className={`marketPill ${badgeStatusClass(row, gameStatus, earlyWinRow)}`} title={title}>
       <span className="marketPillLabel">{label}</span>
       {row.count > 1 && <span className="marketPillCount">×{row.count}</span>}
-      {isEarlyWinLive(row) && <span className="marketPillResult">✓ WON (LIVE)</span>}
+      {earlyWin && <span className="marketPillResult">✓ WON (LIVE)</span>}
       {status === "WON" && <span className="marketPillResult">✓</span>}
       {status === "LOST" && <span className="marketPillResult">✕</span>}
       {showValue && <span className="marketPillValue">{value}</span>}
@@ -530,7 +559,13 @@ function buildPlayerGroups(rows) {
     const settledRows = rowsSorted.filter(isSettled);
     const betIds = [...new Set(rowsSorted.flatMap((row) => row.betIds || []))];
     const live = activeRows.some((row) => row.state === "LIVE");
-    return { ...group, rows: rowsSorted, activeRows, settledRows, betIds, live, stats: playerStatSummary(rowsSorted) };
+    const stats = playerStatSummary(rowsSorted);
+    const liveStatsByKey = Object.fromEntries(
+      stats
+        .filter((stat) => stat.value !== "—")
+        .map((stat) => [stat.key, stat.value])
+    );
+    return { ...group, rows: rowsSorted, activeRows, settledRows, betIds, live, stats, liveStatsByKey };
   }).sort((a, b) => {
     if (a.live !== b.live) return a.live ? -1 : 1;
     if (Boolean(a.activeRows.length) !== Boolean(b.activeRows.length)) return a.activeRows.length ? -1 : 1;
@@ -557,7 +592,22 @@ function PlayerMarketGroup({ group, showSettled, gameStatus }) {
         </span>
         <span className="playerBetCount" style={{ marginLeft: "auto", whiteSpace: "nowrap" }}>{group.betIds.length} bet{group.betIds.length === 1 ? "" : "s"}</span>
       </div>
-      {!!group.activeRows.length && <div className="marketPillRow">{group.activeRows.map((row, index) => <MarketPill key={`${uniqueKey(row)}-${index}`} row={row} gameStatus={gameStatus} />)}</div>}
+      {!!group.activeRows.length && (
+        <div className="marketPillRow">
+          {group.activeRows.map((row, index) => {
+            const statKey = playerStat(row).key;
+            return (
+              <MarketPill
+                key={`${uniqueKey(row)}-${index}`}
+                row={row}
+                gameStatus={gameStatus}
+                sharedLiveValue={group.liveStatsByKey?.[statKey]}
+                sharedLive={group.live || isLiveGameStatus(gameStatus)}
+              />
+            );
+          })}
+        </div>
+      )}
       {showSettled && !!group.settledRows.length && (
         <details className="settledMarketDetails">
           <summary>{group.settledRows.length} settled</summary>
